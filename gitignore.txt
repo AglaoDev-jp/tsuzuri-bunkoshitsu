@@ -1,0 +1,46 @@
+# Python キャッシュ
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 型チェック
+.mypy_cache/
+
+# テスト
+.pytest_cache/
+
+# Ruff
+.ruff_cache/
+
+# カバレッジ
+.coverage
+htmlcov/
+
+# 仮想環境
+venv/
+.venv/
+env/
+.env/
+
+# 一時ファイル・ログ
+*.tmp
+*.log
+.cache/
+
+# プロジェクト固有
+voice_cache/
+
+# OS / エディタ関連
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# PyInstaller ビルド成果物
+dist/
+build/
+*.spec
+
+# 必要になればここへ追加
+# screenshots/
+# work_in_progress/
