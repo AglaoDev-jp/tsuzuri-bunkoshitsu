@@ -13,7 +13,7 @@ v2では、AIが物語だけでなく場面に合う**背景タグ**と**BGMタ�
 最後の正しい選択までたどり着くと、GOOD
 ENDに加えて、エピローグやプレイ内容に応じたAIコメントが生成されます。
 
-詳しい準備と操作方法は、[利用マニュアル](./README_PLAY.md)をご確認ください。\
+詳しい準備と操作方法は、[利用マニュアル](./README_PLAY.md)をご確認ください。
 - 実行ファイルのダウンロードはこちら：[Releases](https://github.com/AglaoDev-jp/tsuzuri-bunkoshitsu/releases/download/v2/tsuzuri-bunkoshitsu_v2.zip)
 
 > \[!NOTE\]
