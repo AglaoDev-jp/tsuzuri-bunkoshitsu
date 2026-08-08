@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import threading
 from typing import Any
 
 import requests
@@ -27,6 +28,10 @@ import requests
 
 class LLMClientError(RuntimeError):
     """Ollamaとの通信、または返答の解析に失敗したことを表す例外。"""
+
+
+class LLMGenerationCancelled(LLMClientError):
+    """ユーザー操作によって進行中のLLM生成が中止されたことを表す例外。"""
 
 
 @dataclass(frozen=True)
@@ -81,6 +86,28 @@ class OllamaClient:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+
+        # Tkinter側のキャンセル操作と生成ワーカーは別スレッドで動くため、
+        # Eventで中止要求を共有し、Lockで通信中Responseへの参照を保護する。
+        # stream=TrueでResponseを保持すると、close()により待機中の接続を閉じ、
+        # 完了済みの古い結果が画面へ戻るまで待たずに中止を通知できる。
+        self._cancel_event = threading.Event()
+        self._response_lock = threading.Lock()
+        self._active_response: requests.Response | None = None
+
+    def cancel_current_request(self) -> None:
+        """
+        進行中の生成へ中止を通知し、保持中のHTTPレスポンスを閉じる。
+
+        接続開始前に押された場合もEventは残るため、その後ワーカーが
+        ``generate_json()`` へ到達した時点で通信せず安全に中止される。
+        """
+        self._cancel_event.set()
+        with self._response_lock:
+            response = self._active_response
+
+        if response is not None:
+            response.close()
 
     def list_models(self) -> list[OllamaModelInfo]:
         """
@@ -146,6 +173,9 @@ class OllamaClient:
             temperature: 低いほど安定的、高いほど表現が多様になりやすい。
         """
 
+        if self._cancel_event.is_set():
+            raise LLMGenerationCancelled("物語の生成がキャンセルされました。")
+
         payload = {
             "model": self.model,
             "messages": [
@@ -163,27 +193,70 @@ class OllamaClient:
             },
         }
 
+        response: requests.Response | None = None
         try:
+            # APIへは従来どおり完成JSONを1件だけ要求する。一方requests側は
+            # stream=Trueとして本文の受信前にResponseを保持し、画面の
+            # キャンセル操作から接続を閉じられるようにする。
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
                 timeout=self.timeout,
+                stream=True,
             )
+
+            with self._response_lock:
+                if self._cancel_event.is_set():
+                    response.close()
+                    raise LLMGenerationCancelled(
+                        "物語の生成がキャンセルされました。"
+                    )
+                self._active_response = response
+
             response.raise_for_status()
             # 1回目のJSON解析: Ollama APIレスポンス全体。
             body = response.json()
+        except LLMGenerationCancelled:
+            raise
         except requests.exceptions.ConnectionError as exc:
+            if self._cancel_event.is_set():
+                raise LLMGenerationCancelled(
+                    "物語の生成がキャンセルされました。"
+                ) from exc
             raise LLMClientError(
                 "Ollamaに接続できません。Ollamaを起動してから再試行してください。"
             ) from exc
         except requests.exceptions.Timeout as exc:
+            if self._cancel_event.is_set():
+                raise LLMGenerationCancelled(
+                    "物語の生成がキャンセルされました。"
+                ) from exc
             raise LLMClientError(
                 "Ollamaの応答がタイムアウトしました。軽いモデルを試してください。"
             ) from exc
         except requests.RequestException as exc:
+            if self._cancel_event.is_set():
+                raise LLMGenerationCancelled(
+                    "物語の生成がキャンセルされました。"
+                ) from exc
             raise LLMClientError(f"Ollama通信エラー: {exc}") from exc
         except json.JSONDecodeError as exc:
+            if self._cancel_event.is_set():
+                raise LLMGenerationCancelled(
+                    "物語の生成がキャンセルされました。"
+                ) from exc
             raise LLMClientError("Ollamaの返答をJSONとして読めませんでした。") from exc
+        finally:
+            if response is not None:
+                with self._response_lock:
+                    if self._active_response is response:
+                        self._active_response = None
+                response.close()
+
+        # 本文受信完了とボタン操作がほぼ同時だった場合も、解析済みの古い結果を
+        # 正常終了として上位へ返さず、キャンセルとして統一して扱う。
+        if self._cancel_event.is_set():
+            raise LLMGenerationCancelled("物語の生成がキャンセルされました。")
 
         # 2回目のJSON解析対象となる、AIの発言本文だけを取り出す。
         content = body.get("message", {}).get("content", "")

@@ -20,6 +20,8 @@ import random
 from typing import Any, Callable
 
 from game_prompts import (
+    BACKGROUND_TAG_VALUES,
+    SCENE_BGM_TAG_VALUES,
     BASE_SYSTEM_PROMPT,
     SUMMARY_SYSTEM_PROMPT,
     ENDING_SYSTEM_PROMPT,
@@ -28,7 +30,7 @@ from game_prompts import (
     build_summary_prompt,
     build_ending_package_prompt,
 )
-from llm_client import LLMClientError, OllamaClient
+from llm_client import LLMClientError, LLMGenerationCancelled, OllamaClient
 
 
 class GameDataError(RuntimeError):
@@ -53,6 +55,14 @@ class Scene:
     correct_choice: str
     bad_end_title: str
     bad_end_text: str
+
+    # 情景窓へ表示する画像を選ぶ内部分類。画面本文やバックログには表示しない。
+    # 旧形式のデータから作る場合も安全に扱えるよう、既定値はnoneにする。
+    background_tag: str = "none"
+
+    # 本編Sceneで再生するBGMの雰囲気分類。LLMが旧形式を返した場合でも
+    # 無音や生成失敗にせず、文章を邪魔しにくいcalmへ安全に戻す。
+    bgm_tag: str = "calm"
 
     # 通常場面の正解後に表示する「次へつながる結果」。
     correct_result: str = ""
@@ -87,6 +97,7 @@ class GameEngine:
         genre_prompt: str,
         total_scenes: int = 5,
         max_retries: int = 3,
+        summary_max_characters: int = 100,
         logger: Callable[[str], None] | None = None,
     ) -> None:
         """ゲーム設定と依存オブジェクトを受け取り、未開始状態を作る。"""
@@ -97,6 +108,8 @@ class GameEngine:
         self.genre_prompt = genre_prompt
         self.total_scenes = total_scenes
         self.max_retries = max_retries
+        # 設定ミスで0以下になっても空要約を量産しないよう、最低1文字を保証する。
+        self.summary_max_characters = max(1, int(summary_max_characters))
         self.logger = logger or (lambda _message: None)
 
         # ゲーム中に更新される進行状態。
@@ -213,7 +226,7 @@ class GameEngine:
         selected_choice: str,
     ) -> str:
         """
-        正解後、別のLLM呼び出しで100文字以内のローリング要約（？）を作ってもらう。
+        正解後、別のLLM呼び出しで設定文字数以内のローリング要約を作ってもらう。
 
         この要約は次場面のプロンプトへ渡す「物語の記憶」として使う。場面全文を
         蓄積する方式より入力を小さく保てる一方、重要情報を落とし得るため、
@@ -230,7 +243,7 @@ class GameEngine:
             selected_choice=selected_choice,
             selected_choice_text=selected_choice_text,
             correct_result=scene.correct_result,
-            max_characters=100,
+            max_characters=self.summary_max_characters,
         )
 
         try:
@@ -248,11 +261,14 @@ class GameEngine:
             # プロンプトの文字数指示だけでは保証にならないため、Python側でも制限する。
             # 改行は1行へ整え、次回プロンプトへ埋め込みやすくする。
             summary = summary.replace("\n", " ").strip()
-            if len(summary) > 100:
-                summary = summary[:100]
+            if len(summary) > self.summary_max_characters:
+                summary = summary[: self.summary_max_characters]
 
             self.logger(f"場面{scene.number}終了時の要約: {summary}")
             return summary
+        except LLMGenerationCancelled:
+            # キャンセルは生成失敗ではないため、簡易要約へ進まず画面層へ伝える。
+            raise
         except (LLMClientError, GameDataError) as exc:
             # 要約は補助処理なので、失敗だけでゲーム全体を止めない。
             # 前回要約と今回の確定事実から、LLMを使わない簡易要約を作る。
@@ -262,8 +278,8 @@ class GameEngine:
                 f"場面{scene.number}で{selected_choice_text}を選び、"
                 f"{scene.correct_result}"
             ).strip()
-            # 末尾には最新の出来事があるため、超過時は後ろ100文字を残す。
-            return fallback[-100:]
+            # 末尾には最新の出来事があるため、超過時は後ろ側を設定文字数だけ残す。
+            return fallback[-self.summary_max_characters :]
 
     def retry_current_scene(self) -> Scene:
         """
@@ -346,6 +362,9 @@ class GameEngine:
                 if not value:
                     raise GameDataError(f"エンディング生成の{key}が空です。")
             return result
+        except LLMGenerationCancelled:
+            # ユーザーが生成を中止した場合は固定文へ進まず、初期画面へ戻す。
+            raise
         except (LLMClientError, GameDataError) as exc:
             self.logger(f"追加エンディング生成に失敗したため固定文を使用します: {exc}")
             return {
@@ -441,6 +460,9 @@ class GameEngine:
                 )
                 # LLMの返答をそのまま信用せず、境界で検証してSceneへ変換する。
                 return self._parse_scene(data, required_correct_choice)
+            except LLMGenerationCancelled:
+                # 通信・JSON失敗用の再試行とは区別し、キャンセルは直ちに終了する。
+                raise
             except (LLMClientError, GameDataError) as exc:
                 last_error = exc
                 self.logger(
@@ -492,6 +514,19 @@ class GameEngine:
         if str(data["choice_a"]).strip() == str(data["choice_b"]).strip():
             raise GameDataError("aとbの選択肢が同じです。")
 
+        # background_tagは、画像機能を追加する前から旧形式の応答を受け入れられるよう、
+        # 必須項目にはしない。欠落・空文字・一覧外の値はすべてnoneへ安全に戻す。
+        background_tag = str(data.get("background_tag", "")).lower().strip()
+        if background_tag not in BACKGROUND_TAG_VALUES:
+            background_tag = "none"
+
+        # title / ending / game_clearは画面進行側だけが使う予約タグである。
+        # Sceneでは7種類の本編タグだけを許可し、欠落・空文字・一覧外の値は
+        # 小さなローカルLLMでもゲームを継続できるようcalmへフォールバックする。
+        bgm_tag = str(data.get("bgm_tag", "")).lower().strip()
+        if bgm_tag not in SCENE_BGM_TAG_VALUES:
+            bgm_tag = "calm"
+
         # 場面種別ごとの追加必須項目を検証する。
         if self.scene_number == self.total_scenes:
             for field in ["good_end_title", "good_end_text"]:
@@ -511,6 +546,8 @@ class GameEngine:
             correct_choice=correct_choice,
             bad_end_title=str(data["bad_end_title"]).strip(),
             bad_end_text=str(data["bad_end_text"]).strip(),
+            background_tag=background_tag,
+            bgm_tag=bgm_tag,
             correct_result=str(data.get("correct_result", "")).strip(),
             good_end_title=str(data.get("good_end_title", "")).strip(),
             good_end_text=str(data.get("good_end_text", "")).strip(),

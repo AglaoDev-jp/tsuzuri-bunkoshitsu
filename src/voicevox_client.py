@@ -44,6 +44,13 @@ from typing import Callable
 import pygame
 import requests
 
+from audio_mixer import (
+    MIXER_LOCK,
+    RESERVED_CHANNEL_COUNT,
+    SFX_CHANNEL_INDEX,
+    ensure_mixer_initialized_locked,
+)
+
 
 class VoicevoxError(RuntimeError):
     """VOICEVOX通信、音声保存、または再生に関するアプリ用例外。"""
@@ -59,6 +66,8 @@ class VoiceJob:
     text: str
     speaker_id: int
     index: int
+    # 最後のチャンクだけが完了通知を持つ。途中のチャンクでは呼び出さない。
+    on_complete: Callable[[], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +76,8 @@ class AudioJob:
 
     request_id: int
     wav_path: Path
+    # 対応する読み上げ要求が最後まで再生されたことを上位へ知らせる。
+    on_complete: Callable[[], None] | None = None
 
 
 class VoicevoxClient:
@@ -249,13 +260,22 @@ class VoicePipeline:
         *,
         base_url: str,
         cache_dir: Path,
+        voice_volume: float = 1.0,
+        sfx_volume: float = 1.0,
         on_error: Callable[[str], None] | None = None,
+        on_sfx_warning: Callable[[str], None] | None = None,
     ) -> None:
         """キュー、排他制御、停止通知、2本の常駐スレッドを初期化する。"""
         self.base_url = base_url.rstrip("/")
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.on_error = on_error
+        self.on_sfx_warning = on_sfx_warning
+        # VOICEVOXと効果音は別の再生先を使うため、音量も独立して保持する。
+        # 0.0～1.0へ収めておけば、設定ファイルと画面スライダーのどちらから
+        # 値を受け取ってもpygameへ安全に渡せる。
+        self._voice_volume = self._normalize_volume(voice_volume)
+        self._sfx_volume = self._normalize_volume(sfx_volume)
 
         # Noneはスレッドを終了させる番兵（sentinel）として使う。
         self._generation_queue: queue.Queue[VoiceJob | None] = queue.Queue()
@@ -263,9 +283,20 @@ class VoicePipeline:
 
         # request_lockは要求世代ID、mixer_lockはpygameの同時操作を保護する。
         self._request_lock = threading.Lock()
-        self._mixer_lock = threading.Lock()
+        # BGM管理側と同じロックを共有し、pygame.mixerの短い操作同士が
+        # 別スレッドから同時実行されないようにする。
+        self._mixer_lock = MIXER_LOCK
         self._request_id = 0
         self._shutdown_event = threading.Event()
+
+        # SoundとChannelへの参照を保持しておくと、再生途中にPython側の参照が
+        # なくなる心配がなく、stop_sound_effect()から確実に停止できる。
+        self._sfx_channel = None
+        self._sfx_sound = None
+
+        # 素材不足や壊れたWAVはゲーム進行を止めない。その代わり、同じ素材に
+        # 対する警告は起動中1回だけ通知し、ログを必要以上に増やさない。
+        self._reported_sfx_warnings: set[str] = set()
 
         # daemon=Trueなので、万一終了処理に到達できなくてもプロセス終了を妨げない。
         # 通常終了時はshutdown()で明示的に停止させる。
@@ -294,21 +325,27 @@ class VoicePipeline:
         parts: list[tuple[str, str]],
         *,
         speaker_id: int,
+        on_complete: Callable[[], None] | None = None,
     ) -> None:
         """
         複数の文章を、指定順のまま1つの読み上げ要求として登録する。
 
         speak()を続けて呼ぶと、後の呼び出しが前の音声を停止する。
         正解後のつなぎ文と次場面のように、両方を連続再生したい場合に使う。
+        on_completeは、最後の有効なチャンクが自然に再生終了した場合だけ呼ばれる。
+        stop()で中断した場合の完了扱いは、停止を指示した上位側が判断する。
         """
         prepared = self._prepare_chunks(parts)
 
         if not prepared:
+            # 読み上げ可能な文字がなければ、待機側を止めないよう即座に完了扱いにする。
+            if on_complete is not None:
+                on_complete()
             return
 
         # 新しい読み上げは前の要求を無効化し、全チャンクへ同じ世代IDを付ける。
         request_id = self._begin_new_request()
-        for chunk, cache_key, index in prepared:
+        for position, (chunk, cache_key, index) in enumerate(prepared):
             self._generation_queue.put(
                 VoiceJob(
                     request_id=request_id,
@@ -316,6 +353,13 @@ class VoicePipeline:
                     text=chunk,
                     speaker_id=speaker_id,
                     index=index,
+                    # 最後の音声だけに通知を持たせることで、複数チャンクでも
+                    # 「全文の読み上げ終了」を一度だけ正確に通知できる。
+                    on_complete=(
+                        on_complete
+                        if position == len(prepared) - 1
+                        else None
+                    ),
                 )
             )
 
@@ -394,6 +438,101 @@ class VoicePipeline:
                 prepared.append((chunk, cache_key, index))
         return prepared
 
+    def play_sound_effect(self, wav_path: Path) -> bool:
+        """
+        指定WAVをVOICEVOXとは独立した専用チャンネルで再生する。
+
+        戻り値は再生を開始できた場合だけTrue。ファイル不足・読み込み失敗・
+        音声デバイスの問題は警告へ変換し、ゲーム本体へ例外を伝播させない。
+        効果音はassetsから直接読むだけなので、VOICEVOXキャッシュや保存対象へ
+        混ざることもない。
+        """
+        wav_path = Path(wav_path)
+
+        # 新しい結果へ移るときは、前の効果音が長い仮素材でも重ならないよう
+        # 先に専用チャンネルだけを止める。対象WAVが不足している場合にも有効。
+        self.stop_sound_effect()
+        try:
+            if not wav_path.is_file():
+                raise FileNotFoundError(wav_path)
+        except OSError as exc:
+            self._report_sfx_warning_once(
+                wav_path,
+                f"効果音ファイルを確認できません: {wav_path} ({exc})",
+            )
+            return False
+
+        try:
+            # pygameの初期化・読み込み・再生は、VOICEVOX側と同じロックで保護する。
+            # ロックするのは短いpygame操作だけで、再生終了までは待たない。
+            with self._mixer_lock:
+                self._ensure_mixer_initialized_locked()
+
+                # Channel(0)を効果音専用として予約する。VOICEVOXはmusic側なので、
+                # 効果音を止めても読み上げの再生キューには触れない。
+                required_channels = RESERVED_CHANNEL_COUNT
+                if pygame.mixer.get_num_channels() < required_channels:
+                    pygame.mixer.set_num_channels(required_channels)
+                pygame.mixer.set_reserved(required_channels)
+
+                channel = pygame.mixer.Channel(SFX_CHANNEL_INDEX)
+                channel.stop()
+                sound = pygame.mixer.Sound(str(wav_path))
+                # Sound側へ設定すると、再生開始前から指定音量が確実に反映される。
+                sound.set_volume(self._sfx_volume)
+                channel.play(sound)
+                self._sfx_channel = channel
+                self._sfx_sound = sound
+            return True
+        except Exception as exc:
+            self._report_sfx_warning_once(
+                wav_path,
+                f"効果音を再生できません: {wav_path} ({exc})",
+            )
+            return False
+
+    def stop_sound_effect(self) -> None:
+        """
+        現在の効果音だけを停止する。
+
+        VOICEVOXのpygame.mixer.music、request_id、生成・再生キューには触れない。
+        「最初から」と終了時に呼ぶことで、前のゲームの音だけが残るのを防ぐ。
+        """
+        with self._mixer_lock:
+            try:
+                if pygame.mixer.get_init() and self._sfx_channel is not None:
+                    self._sfx_channel.stop()
+            except Exception:
+                # 終了処理中の音声デバイス解放エラーは、ゲームを止めずに片付ける。
+                pass
+            finally:
+                self._sfx_channel = None
+                self._sfx_sound = None
+
+    def set_voice_volume(self, volume: float) -> None:
+        """VOICEVOXの現在音量と、これから再生する音声の音量を更新する。"""
+        normalized_volume = self._normalize_volume(volume)
+        with self._mixer_lock:
+            self._voice_volume = normalized_volume
+            try:
+                if pygame.mixer.get_init():
+                    pygame.mixer.music.set_volume(self._voice_volume)
+            except Exception:
+                # 音声デバイスの初期化前・終了中でも、保持値の更新は有効にする。
+                pass
+
+    def set_sfx_volume(self, volume: float) -> None:
+        """効果音の現在音量と、これから再生する効果音の音量を更新する。"""
+        normalized_volume = self._normalize_volume(volume)
+        with self._mixer_lock:
+            self._sfx_volume = normalized_volume
+            try:
+                if self._sfx_sound is not None:
+                    self._sfx_sound.set_volume(self._sfx_volume)
+            except Exception:
+                # 再生終了とスライダー操作が重なっても、次回再生用の保持値は残す。
+                pass
+
     def stop(self) -> None:
         """
         現在要求を無効化し、待機キューと再生を止める。
@@ -426,6 +565,8 @@ class VoicePipeline:
 
         stop()は次の読み上げに備えた一時停止、shutdown()はアプリ終了時だけ使う。
         """
+        # stop()はVOICEVOXだけを対象にしているため、効果音は明示的に止める。
+        self.stop_sound_effect()
         self.stop()
         self._shutdown_event.set()
 
@@ -491,6 +632,7 @@ class VoicePipeline:
                         AudioJob(
                             request_id=job.request_id,
                             wav_path=wav_path,
+                            on_complete=job.on_complete,
                         )
                     )
             except VoicevoxError as exc:
@@ -516,6 +658,10 @@ class VoicePipeline:
                     if not self._is_current(job.request_id):
                         continue
                     self._play_file(job)
+                    # stop()で中断された場合はrequest_idが変わっているため、
+                    # 完了通知を呼ばない。最後まで自然に再生できた場合だけ通知する。
+                    if self._is_current(job.request_id) and job.on_complete is not None:
+                        job.on_complete()
                 except Exception as exc:
                     if self._is_current(job.request_id):
                         self._report_error(f"音声再生エラー: {exc}")
@@ -541,15 +687,11 @@ class VoicePipeline:
         with self._mixer_lock:
             if not self._is_current(job.request_id):
                 return
-            if not pygame.mixer.get_init():
-                # VOICEVOXの標準的なWAVに合わせたモノラル24kHz設定。
-                pygame.mixer.init(
-                    frequency=24000,
-                    size=-16,
-                    channels=1,
-                    buffer=2048,
-                )
+            self._ensure_mixer_initialized_locked()
             pygame.mixer.music.load(str(job.wav_path))
+            # mixer.musicの音量はBGM用Soundとは独立しており、VOICEVOXだけへ
+            # 適用される。ファイルを切り替えるたび保持値を再適用する。
+            pygame.mixer.music.set_volume(self._voice_volume)
             pygame.mixer.music.play()
 
         # 短い間隔で再生状態と要求IDを確認し、stop()へ素早く反応する。
@@ -568,6 +710,16 @@ class VoicePipeline:
             except Exception:
                 pass
 
+    @staticmethod
+    def _ensure_mixer_initialized_locked() -> None:
+        """
+        mixer未初期化時だけ、アプリ共通設定で音声デバイスを開く。
+
+        呼び出し側が必ず_mixer_lockを保持する前提の小さな補助メソッド。
+        効果音が先でもVOICEVOXが先でも、同じ設定を一度だけ使える。
+        """
+        ensure_mixer_initialized_locked()
+
     def _put_playback_job(self, job: AudioJob) -> None:
         """
         再生キューに空きができるまで待ち、有効なジョブだけを登録する。
@@ -583,6 +735,11 @@ class VoicePipeline:
                 continue
 
     @staticmethod
+    def _normalize_volume(volume: float) -> float:
+        """pygameが受け取れる0.0～1.0へ音量を収める。"""
+        return max(0.0, min(1.0, float(volume)))
+
+    @staticmethod
     def _drain_queue(target_queue: queue.Queue) -> None:
         """キュー内の待機項目をすべて取り除き、unfinished_tasks数も対応させる。"""
         try:
@@ -596,6 +753,22 @@ class VoicePipeline:
         """登録済みコールバックがあれば、音声エラーを上位層へ通知する。"""
         if self.on_error is not None:
             self.on_error(message)
+
+    def _report_sfx_warning_once(self, wav_path: Path, message: str) -> None:
+        """同じ効果音ファイルの警告を、アプリ起動中に1回だけ通知する。"""
+        warning_key = str(wav_path)
+        with self._mixer_lock:
+            if warning_key in self._reported_sfx_warnings:
+                return
+            self._reported_sfx_warnings.add(warning_key)
+
+        if self.on_sfx_warning is not None:
+            try:
+                self.on_sfx_warning(message)
+            except Exception:
+                # 警告ログの保存先まで使えない場合でも、効果音の問題だけで
+                # ゲーム本体を停止させないことを最優先にする。
+                pass
 
 
 def clean_text_for_voice(text: str) -> str:
