@@ -14,7 +14,7 @@ v2では、AIが物語だけでなく場面に合う**背景タグ**と**BGMタ�
 ENDに加えて、エピローグやプレイ内容に応じたAIコメントが生成されます。
 
 詳しい準備と操作方法は、[利用マニュアル](./README_PLAY.md)をご確認ください。\
-- 実行ファイルのダウンロードはこちら：[Releases]()
+- 実行ファイルのダウンロードはこちら：[Releases](https://github.com/AglaoDev-jp/tsuzuri-bunkoshitsu/releases/download/v2/tsuzuri-bunkoshitsu_v2.zip)
 
 > \[!NOTE\]
 > 本READMEは、アプリのソースコードおよび仕様をもとに、OpenAIの対話型AI「ChatGPT」の支援を受けて草案を作成し、作者が内容の確認・編集を行っています。
@@ -247,20 +247,25 @@ del "綴り文庫室.spec" 2>nul
 ### 3. `onedir`形式でビルドする
 
 ``` bat
-python -m PyInstaller --clean --noconfirm --onedir --windowed --name "綴り文庫室" --icon "icon.ico" --add-data "data;data" main.py
+python -m PyInstaller --clean --noconfirm --onedir --windowed --name "綴り文庫室" --icon "icon.ico" --add-data "data;data" --add-data "assets;assets" main.py
 ```
 
 主なオプション：
 
-  オプション      内容
-  --------------- -------------------------------------------------------
-  `--clean`       PyInstallerの一時キャッシュを削除してからビルドします
-  `--noconfirm`   既存の出力フォルダを確認なしで置き換えます
-  `--onedir`      実行ファイルと依存ファイルを1つのフォルダへ出力します
-  `--windowed`    起動時にコンソール画面を表示しません
-  `--name`        出力するアプリ名を指定します
-  `--icon`        Windows実行ファイルへ使用するICOアイコンを指定します
-  `--add-data`    `data`フォルダを配布物へ含めます
+| オプション         | 内容                                     |
+| ------------- | -------------------------------------- |
+| `--clean`     | PyInstallerの一時キャッシュを削除してからビルドします       |
+| `--noconfirm` | 既存の出力フォルダを確認なしで置き換えます                  |
+| `--onedir`    | 実行ファイルと依存ファイルを1つのフォルダへ出力します            |
+| `--windowed`  | 起動時にコンソール画面を表示しません                     |
+| `--name`      | 出力するアプリ名を指定します                         |
+| `--icon`      | Windows実行ファイルへ使用するICOアイコンを指定します        |
+| `--add-data`  | `data`や`assets`など、実行時に必要なファイルを配布物へ含めます |
+
+このビルドでは、次の2つのフォルダを配布物へ含めています。
+
+* `data`：ゲーム設定ファイルなど
+* `assets`：背景画像、結果画面画像、BGM・効果音用フォルダなど
 
 > \[!NOTE\]
 > Windowsでは`--add-data`のコピー元とコピー先をセミコロン`;`で区切ります。
