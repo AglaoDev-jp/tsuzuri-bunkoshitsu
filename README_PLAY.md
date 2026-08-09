@@ -24,7 +24,7 @@
 - [タイピング表示](#タイピング表示)
 - [BAD ENDと再挑戦](#bad-endと再挑戦)
 - [GOOD ENDとAI COMMENT](#good-endとai-comment)
-- [モデル選択とThinking](#モデル選択とthinking)
+- [モデル選択](#モデル選択)
 - [VOICEVOX読み上げ](#voicevox読み上げ)
 - [ジャンルと設定の編集](#ジャンルと設定の編集)
 - [ファイルとフォルダ](#ファイルとフォルダ)
@@ -396,7 +396,7 @@ AI COMMENTは、プレイ記録をもとに、スムーズに攻略したか、�
 
 ---
 
-## モデル選択とThinking
+## モデル選択
 
 ### モデル一覧
 
@@ -667,7 +667,6 @@ ollama pull gemma3:4b
 対処例：
 
 - より軽量なモデルを選ぶ
-- ThinkingをOFFにする
 - PC上の負荷が高いアプリを終了する
 - Ollamaを再起動する
 
@@ -685,7 +684,6 @@ ollama pull gemma3:4b
 
 - 指示追従性能の高いモデルへ変更する
 - Ollamaを再起動する
-- ThinkingのON／OFFを切り替える
 
 内部の再試行上限は、初期設定で3回です。
 
