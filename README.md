@@ -644,20 +644,20 @@ COMMENTは、ローカルLLMによって自動生成されます。
 
 ## このプロジェクトのライセンス
 
-本プロジェクトでは、アプリケーションコードとプロンプト関連データに異なるライセンスを設定しています。
+本プロジェクトでは、アプリケーションコードとプロンプト・画像などのコンテンツに異なるライセンスを設定しています。
 
 ### アプリケーションコード
 
--   **ライセンス：MIT License**
--   商用利用：可能
--   改変：可能
--   再配布：可能
+* **ライセンス：MIT License**
+* 商用利用：可能
+* 改変：可能
+* 再配布：可能
 
 著作権表示とライセンス文の同梱が必要です。詳細は、[LICENSE-CODE](./licenses/application/LICENSE-CODE.txt)をご確認ください。
 
 クレジット例：
 
-``` text
+```text
 Code by AglaoDev-jp © 2026, licensed under the MIT License.
 ```
 
@@ -665,10 +665,10 @@ Code by AglaoDev-jp © 2026, licensed under the MIT License.
 
 本プロジェクトに含まれるアプリアイコンは、MIT Licenseを適用します。
 
-- **ライセンス：MIT License**
-- 商用利用：可能
-- 改変：可能
-- 再配布：可能
+* **ライセンス：MIT License**
+* 商用利用：可能
+* 改変：可能
+* 再配布：可能
 
 著作権表示とライセンス文の同梱が必要です。
 
@@ -683,19 +683,43 @@ App icon by AglaoDev-jp © 2026, licensed under the MIT License.
 ジャンル説明やゲーム生成用プロンプトには、Creative Commons Attribution
 4.0 International（CC BY 4.0）を適用します。
 
--   商用利用：可能
--   改変：可能
--   再配布：可能
--   クレジット表記：必要
+* 商用利用：可能
+* 改変：可能
+* 再配布：可能
+* クレジット表記：必要
 
 詳細は、[LICENSE-PROMPT](./licenses/application/LICENSE-PROMPT.txt)をご確認ください。
 
 クレジット例：
 
-``` text
+```text
 Prompt Collection by AglaoDev-jp
 Licensed under CC BY 4.0
 ```
+
+### 画像素材
+
+本プロジェクトに含まれる背景画像やゲーム内表示用画像には、Creative Commons Attribution
+4.0 International（CC BY 4.0）を適用します。
+
+* **ライセンス：CC BY 4.0**
+* 商用利用：可能
+* 改変：可能
+* 再配布：可能
+* クレジット表記：必要
+
+詳細は、[LICENSE-IMAGE](./licenses/application/LICENSE-IMAGE.txt)をご確認ください。
+
+クレジット例：
+
+```text
+Image Collection by AglaoDev-jp
+Licensed under CC BY 4.0
+```
+
+---
+
+※ BGM・効果音など、利用者が別途用意する外部素材には、それぞれの素材提供元が定めるライセンスが適用されます。
 
 ---
 
