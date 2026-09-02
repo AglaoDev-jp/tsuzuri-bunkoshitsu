@@ -56,7 +56,11 @@ import pygame
 from background_manager import BackgroundImageCatalog
 from bgm_manager import BGMManager
 from game_engine import GameDataError, GameEngine, Scene
-from game_prompts import BACKGROUND_TAG_VALUES, BGM_TAG_VALUES
+from game_prompts import (
+    BACKGROUND_TAG_VALUES,
+    BGM_TAG_VALUES,
+    FREE_STORY_REQUEST_MAX_CHARACTERS,
+)
 from llm_client import (
     LLMClientError,
     LLMGenerationCancelled,
@@ -158,6 +162,11 @@ SFX_NARRATIVE_DELAY_MS = 250
 # 選択肢は通常時を落ち着いた白、ホバー時を淡い青にして判別しやすくする。
 CHOICE_BUTTON_BG = "#f7f7f7"
 CHOICE_BUTTON_HOVER_BG = "#dcecff"
+
+# 既存ジャンルと同じ選択欄へ加える、新しい物語の入口。
+# GameEngineへは最終的に従来どおりgenre_name / genre_promptを渡すため、
+# この名前がゲーム進行側の新しい分岐を増やすことはない。
+FREE_STORY_MODE_NAME = "自由に綴る"
 
 # LLMの生成結果ではなく、アプリが必ず同じ言葉で伝える終了案内。
 # 画面用と音声用を分けると、引用符をVOICEVOXに読ませず自然に案内できる。
@@ -281,6 +290,9 @@ class AdventureApp:
         self.current_game_started_at: datetime | None = None
         self.current_game_genre = ""
         self.current_game_model = ""
+        # 自由入力から開始中の依頼原文を、最初のScene表示まで保持する。
+        # LLMエラーや生成キャンセル時はこの値を使って入力画面へ復帰する。
+        self.active_free_story_request: str | None = None
 
         # PhotoImageをインスタンス変数へ保持しないと、Tkinter側で表示中でも
         # Pythonのガベージコレクションに回収され、画像だけ消えることがある。
@@ -333,6 +345,10 @@ class AdventureApp:
         # StringVar / BooleanVarは、GUI部品とPython値を同期するTkinter変数。
         self.genre_var = tk.StringVar(value=next(iter(GENRES)))
         self.model_var = tk.StringVar(value=SETTINGS["ollama"]["default_model"])
+        self.free_story_count_var = tk.StringVar(
+            value=f"0 / {FREE_STORY_REQUEST_MAX_CHARACTERS}文字"
+        )
+        self.free_story_feedback_var = tk.StringVar(value="")
         self.voice_enabled_var = tk.BooleanVar(value=False)
         self.speaker_var = tk.StringVar(
             value=str(SETTINGS["voicevox"]["speaker_id"])
@@ -358,7 +374,8 @@ class AdventureApp:
         # 入力欄が無効なタイピング中でもEnterを受け取れるよう、rootへ登録する。
         self.root.bind("<Return>", self._on_enter)
         self._write(
-            "ジャンルとモデルを選び、「ゲーム開始」を押してください。\n"
+            "ジャンル（または「自由に綴る」）とモデルを選び、"
+            "「ゲーム開始」を押してください。\n"
             "ゲーム中は、画面下のAまたはBボタンで選択します。\n"
             "Enterを押すと、全文表示または現在の音声停止を行います。\n"
         )
@@ -393,11 +410,13 @@ class AdventureApp:
         self.genre_combo = ttk.Combobox(
             settings_frame,
             textvariable=self.genre_var,
-            values=list(GENRES.keys()),
+            # 既存ジャンルの末尾へ追加し、通常モードの並び順を変えない。
+            values=[*GENRES.keys(), FREE_STORY_MODE_NAME],
             state="readonly",
             width=20,
         )
         self.genre_combo.grid(row=0, column=1, padx=(5, 15), sticky="w")
+        self.genre_combo.bind("<<ComboboxSelected>>", self._on_genre_selected)
 
         tk.Label(settings_frame, text="モデル:").grid(
             row=0, column=2, sticky="w"
@@ -636,6 +655,105 @@ class AdventureApp:
             pady=5,
         )
 
+        # 「自由に綴る」専用の入力画面。通常の本文欄とは別ウィジェットにし、
+        # 同じgridセルで切り替える。これにより、本文欄に結び付いたタイピング・
+        # Enter・VOICEVOX・待機表示の処理を変更せず、そのまま維持できる。
+        self.free_story_frame = tk.Frame(
+            self.root,
+            background="#f7f7f7",
+            padx=22,
+            pady=18,
+        )
+        self.free_story_frame.grid(
+            row=3,
+            column=0,
+            sticky="nsew",
+            padx=10,
+            pady=5,
+        )
+        self.free_story_frame.grid_columnconfigure(0, weight=1)
+        # 説明文の直下に置く入力欄へ、画面内の余った高さをすべて渡す。
+        # 通常ウィンドウでも複数行を見渡せる高さを確保し、画面を広げた場合は
+        # その増加分も入力欄が自然に受け取るようにする。
+        self.free_story_frame.grid_rowconfigure(2, weight=1)
+
+        tk.Label(
+            self.free_story_frame,
+            text="どんな物語で遊びたいですか？",
+            font=("", 15, "bold"),
+            anchor="w",
+            background="#f7f7f7",
+        ).grid(row=0, column=0, sticky="ew")
+        tk.Label(
+            self.free_story_frame,
+            text="下の入力欄に、遊んでみたい物語を自由に入力してください。",
+            font=("", 11),
+            anchor="w",
+            background="#f7f7f7",
+        ).grid(row=1, column=0, sticky="ew", pady=(10, 10))
+
+        self.free_story_input = scrolledtext.ScrolledText(
+            self.free_story_frame,
+            wrap=tk.WORD,
+            font=("", 12),
+            height=8,
+            padx=12,
+            pady=10,
+        )
+        self.free_story_input.grid(row=2, column=0, sticky="nsew")
+        self.free_story_input.bind(
+            "<KeyRelease>",
+            self._on_free_story_input_changed,
+        )
+        # マウス操作の貼り付け・切り取りではKeyReleaseが発生しない場合がある。
+        # virtual eventの処理後に数え直すことで、文字数表示も実内容へ追従する。
+        self.free_story_input.bind(
+            "<<Paste>>",
+            lambda _event: self.root.after(
+                0, self._on_free_story_input_changed
+            ),
+            add="+",
+        )
+        self.free_story_input.bind(
+            "<<Cut>>",
+            lambda _event: self.root.after(
+                0, self._on_free_story_input_changed
+            ),
+            add="+",
+        )
+
+        free_story_footer = tk.Frame(
+            self.free_story_frame,
+            background="#f7f7f7",
+        )
+        free_story_footer.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        free_story_footer.grid_columnconfigure(0, weight=1)
+        tk.Label(
+            free_story_footer,
+            textvariable=self.free_story_feedback_var,
+            foreground="#b00020",
+            anchor="w",
+            background="#f7f7f7",
+        ).grid(row=0, column=0, sticky="ew")
+        tk.Label(
+            free_story_footer,
+            textvariable=self.free_story_count_var,
+            foreground="#555555",
+            anchor="e",
+            background="#f7f7f7",
+        ).grid(row=0, column=1, sticky="e", padx=(12, 0))
+        tk.Label(
+            self.free_story_frame,
+            text="入力したら「ゲーム開始」をクリックしてください。",
+            font=("", 11, "bold"),
+            anchor="w",
+            background="#f7f7f7",
+        ).grid(row=4, column=0, sticky="ew", pady=(8, 0))
+
+        # 起動時は従来どおり本文欄を表示する。grid_remove()なら配置情報が
+        # 保持されるため、選択時に引数なしのgrid()で同じ位置へ戻せる。
+        self.free_story_frame.grid_remove()
+
         # 下段: 長い文章でも読める、横幅いっぱいのA・B選択肢ボタン。
         self.choice_frame = tk.LabelFrame(
             self.root,
@@ -714,6 +832,54 @@ class AdventureApp:
         self._bind_choice_hover(self.choice_a_button)
         self._bind_choice_hover(self.choice_b_button)
         self._bind_choice_hover(self.next_scene_button)
+
+    def _is_free_story_mode(self) -> bool:
+        """現在のジャンル選択が「自由に綴る」かを返す。"""
+        return self.genre_var.get() == FREE_STORY_MODE_NAME
+
+    def _on_genre_selected(self, _event: tk.Event | None = None) -> None:
+        """ジャンル選択に合わせ、本文欄と自由入力欄を同じ場所で切り替える。"""
+        if self._is_free_story_mode():
+            self._show_free_story_input()
+        else:
+            self._show_story_text_area()
+
+    def _show_free_story_input(self) -> None:
+        """本文欄を隠し、保持中の自由入力欄を同じ表示領域へ戻す。"""
+        self.text_area.grid_remove()
+        # 自由入力中は選択肢をまだ使わないため、空の固定枠を一時的に隠す。
+        # その150px分も可変行へ戻り、通常サイズのウィンドウでも入力欄が
+        # 一行程度まで押しつぶされず、十分な編集領域を確保できる。
+        self.choice_frame.grid_remove()
+        self.free_story_frame.grid()
+        self._update_free_story_count()
+        self.free_story_input.focus_set()
+
+    def _show_story_text_area(self) -> None:
+        """自由入力欄を隠し、既存の読み取り専用本文欄を復元する。"""
+        self.free_story_frame.grid_remove()
+        self.text_area.grid()
+        # 通常ジャンルへ戻した場合やゲーム開始後は、従来どおり選択肢枠を
+        # 復元する。grid()だけなら最初に指定した配置設定がそのまま使われる。
+        self.choice_frame.grid()
+
+    def _on_free_story_input_changed(self, _event: tk.Event | None = None) -> None:
+        """入力中の文字数を表示し、修正後は古い案内エラーを消す。"""
+        length = self._update_free_story_count()
+        if length > FREE_STORY_REQUEST_MAX_CHARACTERS:
+            self.free_story_feedback_var.set(
+                f"{FREE_STORY_REQUEST_MAX_CHARACTERS}文字以内で入力してください。"
+            )
+        elif self.free_story_input.get("1.0", "end-1c").strip():
+            self.free_story_feedback_var.set("")
+
+    def _update_free_story_count(self) -> int:
+        """自由入力の現在文字数を数え、画面表示を更新して返す。"""
+        length = len(self.free_story_input.get("1.0", "end-1c"))
+        self.free_story_count_var.set(
+            f"{length} / {FREE_STORY_REQUEST_MAX_CHARACTERS}文字"
+        )
+        return length
 
     @staticmethod
     def _scale_value_to_volume(value: str) -> float:
@@ -1075,6 +1241,9 @@ class AdventureApp:
         """有効な第1場面だけを受け取り、通常の場面表示へ進める。"""
         if not self._complete_generation(generation_id, engine):
             return
+        # 開始設定と第1場面の両方が完成した時点で、復帰用の原文は不要になる。
+        self.active_free_story_request = None
+        self._show_story_text_area()
         self._show_scene(scene)
 
     def _finish_choice_generation(
@@ -1097,7 +1266,46 @@ class AdventureApp:
         """キャンセル後の古いエラーを無視し、現在の生成エラーだけを通知する。"""
         if not self._complete_generation(generation_id, engine):
             return
-        self._finish_with_error(message)
+
+        # 通常モードは従来のエラー表示をそのまま使う。自由入力からの開始だけは
+        # 原文を保持した入力画面へ戻し、そのまま修正・再試行できるようにする。
+        if self.active_free_story_request is None:
+            self._finish_with_error(message)
+            return
+
+        self.active_free_story_request = None
+        self.engine = None
+        self._cancel_typing()
+        self._stop_waiting_animation()
+        self._show_title_image()
+        self.game_clear_complete = False
+        self.backlog_exported = False
+        self.voice_cache_exported = False
+        self.current_game_started_at = None
+        self.current_game_genre = ""
+        self.current_game_model = ""
+        self.export_text_button.config(state=tk.DISABLED)
+        self.export_voice_button.config(state=tk.DISABLED)
+        self.retry_button.config(state=tk.DISABLED)
+        self.start_button.config(text="ゲーム開始")
+        self._reset_choice_buttons()
+        self._clear_backlog()
+        # 入力画面の背後にある本文欄も初期案内へ戻す。エラー後に通常ジャンルへ
+        # 切り替えた場合、失敗時の待機表示や見出しが残らないようにする。
+        self._clear_text_area()
+        self._write(
+            "ジャンル（または「自由に綴る」）とモデルを選び、"
+            "「ゲーム開始」を押してください。\n"
+            "ゲーム中は、画面下のAまたはBボタンで選択します。\n"
+            "Enterを押すと、全文表示または現在の音声停止を行います。\n"
+        )
+        self.genre_var.set(FREE_STORY_MODE_NAME)
+        self.free_story_feedback_var.set(
+            "物語の準備に失敗しました。入力内容を確認して再試行できます。"
+        )
+        self._show_free_story_input()
+        self._set_busy(False)
+        messagebox.showerror("エラー", message)
 
     def cancel_generation(self) -> None:
         """
@@ -1109,10 +1317,12 @@ class AdventureApp:
         if not self.generation_active:
             return
 
+        was_free_story_start = self.active_free_story_request is not None
         client = self.active_llm_client
         self.generation_id += 1
         self.generation_active = False
         self.active_llm_client = None
+        self.active_free_story_request = None
         self.engine = None
         self.cancel_generation_button.config(state=tk.DISABLED)
 
@@ -1144,12 +1354,23 @@ class AdventureApp:
         self._reset_choice_buttons()
         self._clear_backlog()
         self._clear_text_area()
-        self._write(
-            "物語の生成をキャンセルしました。\n\n"
-            "ジャンルとモデルを選び、「ゲーム開始」を押してください。\n"
-            "ゲーム中は、画面下のAまたはBボタンで選択します。\n"
-            "Enterを押すと、全文表示または現在の音声停止を行います。\n"
-        )
+        if was_free_story_start:
+            # 自由入力の文章は専用ウィジェット内に残っているため、削除せず
+            # そのまま再試行できる画面へ戻す。
+            self.genre_var.set(FREE_STORY_MODE_NAME)
+            self.free_story_feedback_var.set(
+                "物語の準備をキャンセルしました。入力内容は保持されています。"
+            )
+            self._show_free_story_input()
+        else:
+            self._show_story_text_area()
+            self._write(
+                "物語の生成をキャンセルしました。\n\n"
+                "ジャンル（または「自由に綴る」）とモデルを選び、"
+                "「ゲーム開始」を押してください。\n"
+                "ゲーム中は、画面下のAまたはBボタンで選択します。\n"
+                "Enterを押すと、全文表示または現在の音声停止を行います。\n"
+            )
         self._set_busy(False)
 
     def start_game(self) -> None:
@@ -1161,6 +1382,35 @@ class AdventureApp:
         """
         if self.busy:
             return
+
+        # GUIの装飾付き表示名ではなく、Ollamaが認識する実モデル名を使う。
+        # ゲーム状態を片付ける前に検証し、不足時に現在の表示を失わないようにする。
+        model = self._selected_model_name()
+        if not model:
+            self._show_error("モデル名を入力してください。")
+            return
+
+        free_story_request: str | None = None
+        if self._is_free_story_mode():
+            input_text = self.free_story_input.get("1.0", "end-1c")
+            normalized_input = input_text.strip()
+            if not normalized_input:
+                # 空欄ではOllamaへ一切送らず、入力場所のすぐ下で案内する。
+                self.free_story_feedback_var.set(
+                    "遊びたい物語を入力してください。"
+                )
+                self.free_story_input.focus_set()
+                self.root.bell()
+                return
+            if len(input_text) > FREE_STORY_REQUEST_MAX_CHARACTERS:
+                self.free_story_feedback_var.set(
+                    f"{FREE_STORY_REQUEST_MAX_CHARACTERS}文字以内で入力してください。"
+                )
+                self.free_story_input.focus_set()
+                self.root.bell()
+                return
+            free_story_request = normalized_input
+            self.free_story_feedback_var.set("")
 
         # プレイ途中の押し間違いだけは確認する。エンディング後は確認せず、
         # すぐ次の物語へ進めるほうが繰り返し遊びやすい。
@@ -1190,14 +1440,14 @@ class AdventureApp:
         self.choice_buttons_ready = False
         self._reset_choice_buttons()
 
-        # GUIの装飾付き表示名ではなく、Ollamaが認識する実モデル名を使う。
-        model = self._selected_model_name()
-        if not model:
-            self._show_error("モデル名を入力してください。")
-            return
-
-        genre_name = self.genre_var.get()
-        genre_prompt = GENRES[genre_name]
+        if free_story_request is not None:
+            # 整理処理が完了するまでは仮の既存形式を入れ、同じGameEngineを
+            # 生成管理へ登録する。worker内でLLMが整理した値へ安全に置き換える。
+            genre_name = FREE_STORY_MODE_NAME
+            genre_prompt = free_story_request
+        else:
+            genre_name = self.genre_var.get()
+            genre_prompt = GENRES[genre_name]
 
         # 新しいゲーム単位で、閲覧・書き出し対象の記録を初期化する。
         self.game_clear_complete = False
@@ -1230,7 +1480,11 @@ class AdventureApp:
             logger=self._log_internal,
         )
         self.engine = engine
+        self.active_free_story_request = free_story_request
 
+        # 専用入力欄は開始時点で隠し、既存の待機表示・本文表示へ戻す。
+        # 入力ウィジェット自体は破棄しないため、失敗時には原文を復元できる。
+        self._show_story_text_area()
         self._clear()
         self.retry_button.config(state=tk.DISABLED)
         self._write(f"=== {genre_name} ===\n")
@@ -1241,7 +1495,7 @@ class AdventureApp:
         generation_id = self._begin_generation(client)
         threading.Thread(
             target=self._start_game_worker,
-            args=(engine, generation_id),
+            args=(engine, generation_id, free_story_request),
             daemon=True,
         ).start()
 
@@ -1249,9 +1503,12 @@ class AdventureApp:
         self,
         engine: GameEngine,
         generation_id: int,
+        free_story_request: str | None,
     ) -> None:
-        """第1場面を生成し、結果をTkinterのメインスレッドへ戻す。"""
+        """必要なら自由文を整理し、第1場面を生成してメインスレッドへ戻す。"""
         try:
+            if free_story_request is not None:
+                engine.prepare_free_story(free_story_request)
             scene = engine.start()
             self.root.after(
                 0,
@@ -2594,13 +2851,18 @@ class AdventureApp:
             background=CHOICE_BUTTON_BG,
         )
 
-    def _on_enter(self, _event: tk.Event) -> str:
+    def _on_enter(self, _event: tk.Event) -> str | None:
         """
         Enterキーを「全文表示＋音声停止」または「残っている音声停止」に使う。
 
         ``"break"`` を返すとTkinterの既定処理へのイベント伝播を止められ、
         同じEnterが二重に処理されるのを防げる。
         """
+        # 自由入力欄は複数行入力を前提とするため、ここだけは通常の改行として
+        # Tkinterへ渡す。ゲーム中の全文表示・音声停止とは混同しない。
+        if self.root.focus_get() is self.free_story_input:
+            return None
+
         if self.typing_active:
             # stop()は再生中だけでなく、生成・再生待ちのチャンクも無効化する。
             self.stop_voice()

@@ -41,6 +41,9 @@ dist/
 build/
 *.spec
 
+# ゲーム実行ログ
+src/logs/
+
 # 必要になればここへ追加
 # screenshots/
 # work_in_progress/

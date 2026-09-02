@@ -1,102 +1,117 @@
-# 綴り文庫室 v2
-**"選択で綴る、偶然の物語。"**  
-**Ollama + VOICEVOXで遊ぶ、ローカルAIテキストアドベンチャーゲーム**
-本アプリは、ローカル環境で動作する **Ollama API** および **VOICEVOX
-ENGINE** を利用します。\
-本リポジトリでは、アプリケーションのソースコードと実行ファイルを公開しています。\
-**綴り文庫室（つづりぶんこしつ）は、選んだジャンルに合わせてローカルLLMが物語を自動生成する、短編テキストアドベンチャーゲームです。**
+# 綴り文庫室 v3
 
-全5場面の物語を進み、各場面で表示される `a`・`b`
-の二択から行動を選びます。片方は物語が続く選択肢、もう片方はその場で結末を迎えるBAD
-ENDです。\
-v2では、AIが物語だけでなく場面に合う**背景タグ**と**BGMタグ**も選択します。登録済みの背景画像から情景に合うものを表示し、ユーザーが用意したBGMがある場合は場面の雰囲気に合わせて再生します。\
-最後の正しい選択までたどり着くと、GOOD
-ENDに加えて、エピローグやプレイ内容に応じたAIコメントが生成されます。
+**「選択で綴る、偶然の物語。」**  
+**Ollama + VOICEVOXで遊ぶ、ローカルAIテキストアドベンチャーゲーム**  
 
-詳しい準備と操作方法は、[利用マニュアル](./README_PLAY.md)をご確認ください。
-- 実行ファイルのダウンロードはこちら：[Releases](https://github.com/AglaoDev-jp/tsuzuri-bunkoshitsu/releases/download/v2/tsuzuri-bunkoshitsu_v2.zip)
+「綴り文庫室（つづりぶんこしつ）」は、ローカル環境で動作するLLMがプレイごとに物語を生成する、全5場面の短編テキストアドベンチャーゲームです。  
 
-> \[!NOTE\]
-> 本READMEは、アプリのソースコードおよび仕様をもとに、OpenAIの対話型AI「ChatGPT」の支援を受けて草案を作成し、作者が内容の確認・編集を行っています。
+30種類の登録ジャンル、または文章で希望を指定する「自由に綴る」から物語を始められます。各場面で2つの行動から1つを選び、AIがその場で作る物語をGOOD ENDまで導きます。  
+
+物語生成には [Ollama](https://ollama.com/) を使用します。音声読み上げには、任意で [VOICEVOX](https://voicevox.hiroshiba.jp/) を使用できます。物語生成と読み上げは、どちらもローカル環境のAPIへ接続します。  
+
+- 詳しい準備と操作方法：[利用マニュアル](./README_PLAY.md)
+- 実行ファイルのダウンロード：[GitHub Releases v3](https://github.com/AglaoDev-jp/tsuzuri-bunkoshitsu/releases/tag/v3)
+
+> [!NOTE]
+> 本READMEは、アプリのソースコードおよび仕様をもとに、OpenAIの対話型AI「ChatGPT」の支援を受けて草案を作成し、作者が内容の確認・編集を行っています。  
 > 本ソフトウェアは、同名または類似名称の既存の商標・製品・サービスとは関係ありません。
 
 ---
 
-## v2の主な変更点
+## v2 v3の主な変更点
 
-* 場面に合わせてAIが背景画像タグを選択
-* 同じ背景タグへ複数画像を登録できる背景カタログ方式
-* 場面の雰囲気に合わせてAIがBGMタグを選択
-* タイトル、エピローグ、GAME CLEAR用BGM
-* 正解・BAD END・GOOD ENDの効果音
-* BGM・SE・VOICEの個別音量調整
-* LLM生成中のキャンセル機能
-* タイトル、GAME CLEAR、AI COMMENT、プレイ記録などの結果画像
-* 使用した画像・BGMを `game.log` へ記録
-* 選択できるシナリオジャンルを30種類に拡充
+### 「自由に綴る」モード (v3)
 
-  * 「日常の不思議」「旅情ドラマ」「時代劇」「探偵ミステリー」「料理チャレンジ」「格闘アクション」「ラブコメ」を追加
-  * 「ホテル脱出コメディ」をラインナップから削除
+- 遊びたい物語を文章で自由に指定可能
+- 入力上限は1000文字
+- 入力内容をAIが短編ゲーム向けの開始設定へ整理
+- 整理や第1場面の生成に失敗した場合は、入力内容を保持したまま再試行可能
+- 通常ウィンドウでも入力しやすい複数行入力画面
 
-なお、**BGM・効果音の音源ファイルは、配布物に含まれておりません。**
-必要な場合は、利用者自身が使用可能な音源を用意し、READMEで指定するファイル名へ変更して配置してください。
+### 物語生成プロンプトの改善 (v3)
+
+- ユーザーが指定したジャンル、舞台、主人公、目的を物語全体で優先
+- 各場面に導入・中盤・決着直前・最終場面の役割を付与
+- 探索や調査だけが連続しにくい生成方針
+- 前の場面と似た出来事や行動の繰り返しを抑制
+- GOOD ENDを必ずしも大団円に限定せず、物語に合った正規クリア結末として生成
+- AI COMMENTの過剰な称賛や定型表現を抑え、実際のプレイ内容に沿った短評へ改善
+
+### 背景・音楽・演出の拡充
+
+- 背景タグを65種類へ拡充
+- 背景画像を100枚収録
+- 同じ背景タグへ複数画像を登録できる背景カタログ方式
+- タイトル・通常場面・エピローグ・GAME CLEAR用のBGMを10曲収録 (v3)
+- 正解・BAD END・GOOD END用の効果音を3種類収録 (v3)
+- タイトル、正解、BAD END、GAME CLEAR、AI COMMENT、プレイ記録、終了案内用の画像を収録
+- 使用した背景画像・結果画像・BGMを `game.log` へ記録
+
+### 操作・記録機能の改善
+
+- 正解結果のあとに「次のシナリオへ」を押して進む方式
+- エンディングの各項目を専用ボタンで読み進める方式
+- 現在までの物語を別画面で確認できるバックログ
+- ゲームクリア後のプレイ記録テキスト保存
+- VOICEVOXで生成した読み上げ音声の保存
+- LLM生成中のキャンセルと初期画面への復帰
+- BGM・SE・VOICEの個別音量調整
 
 ---
 
 ## ガイドライン
 
-ゲームプレイ・配信・二次創作等については、
-[GUIDELINE.md](./GUIDELINE.md) をご確認ください。
+ゲームプレイ・配信・動画投稿・二次創作などについては、[GUIDELINE.md](./GUIDELINE.md)をご確認ください。
 
 ---
 
 ## 主な機能
 
--   Ollamaを利用したローカルAIストーリー生成
--   24種類のジャンルから物語を選択
--   全5場面で構成される短編テキストアドベンチャー
--   各場面に `a`・`b` の二択を表示
--   正しい選択で次の場面へ進行、誤った選択でBAD END
--   BAD END後に「直前の選択肢へ」戻って再挑戦
--   本文を1文字ずつ表示するタイピングエフェクト
--   Enterキーによる本文の即時表示
--   Ollamaにインストールされているモデル一覧の取得・更新
--   LLM生成中の「生成キャンセル」と初期画面への復帰
--   VOICEVOXによる文章の順次読み上げ
--   BGM・SE・VOICEの個別音量調整
--   AIが選択する `background_tag` に応じた背景画像表示
--   同じ背景タグへ複数画像を登録し、候補から切り替えて表示
--   AIが選択する `bgm_tag` に応じたBGM再生
--   BGMのループ再生と場面切り替え時のフェード
--   正解・BAD END・GOOD END用の効果音
--   タイトル、正解、BAD END、GAME CLEAR、AI
-    COMMENT、プレイ記録などの結果画像表示
--   クリア後のエピローグ、GAME CLEAR、プレイ記録、AI COMMENT
--   プレイ中のバックログ保存、音声の保存
+- Ollamaを利用したローカルAIストーリー生成
+- 30種類の登録ジャンル
+- 文章で物語を指定できる「自由に綴る」モード
+- 全5場面で構成される短編テキストアドベンチャー
+- 各場面に2つの選択肢ボタンを表示
+- 正しい選択で次の場面へ進行、誤った選択でBAD END
+- BAD END後に「直前の選択肢へ」戻って再挑戦
+- 正解位置が片側へ偏りすぎないランダムな正解パターン
+- 本文を1文字ずつ表示するタイピングエフェクト
+- Enterキーによる本文の即時表示と読み上げ停止
+- Ollamaにインストールされているモデル一覧の取得・更新
+- LLM生成中の「生成キャンセル」
+- VOICEVOXによる順次読み上げ
+- BGM・SE・VOICEの個別音量調整
+- AIが選択する `background_tag` に応じた背景画像表示
+- AIが選択する `bgm_tag` に応じたBGM再生
+- BGMのループ再生と場面切り替え時のフェード
+- 正解・BAD END・GOOD END用の効果音
+- エピローグ、GAME CLEAR、AI COMMENT、プレイ記録、終了案内
+- バックログの閲覧
+- ゲームクリア後のテキスト・音声保存
 
 ---
 
 ## ゲームの流れ
 
-1.  ジャンルとOllamaモデルを選びます。
-2.  「ゲーム開始」を押すと、AIが最初の場面を生成します。
-3.  本文と `a`・`b` の選択肢を読み、どちらかを入力します。
-4.  正解なら次の場面へ進み、不正解ならBAD ENDになります。
-5.  BAD END後は、同じ場面を生成し直さずに「直前の選択肢へ」戻れます。
-6.  5場面目の正解でGOOD
-    ENDとなり、追加のエンディング演出が生成されます。
+1. ジャンル（または「自由に綴る」）とOllamaモデルを選びます。
+2. 「自由に綴る」を選んだ場合は、遊びたい物語を入力します。
+3. 「ゲーム開始」を押すと、AIが第1場面を生成します。
+4. 本文と2つの選択肢を読み、行動を選びます。
+5. 正解なら結果文が表示され、「次のシナリオへ」で次の場面へ進みます。
+6. 不正解ならBAD ENDとなり、「直前の選択肢へ」で同じ場面へ戻れます。
+7. 5場面目の正解でGOOD ENDとなります。
+8. エピローグ、GAME CLEAR、AI COMMENT、プレイ記録、終了案内を順番に読み進めます。
+9. クリア後は、必要に応じてプレイ記録や生成済み音声を保存できます。
 
-ストーリーはプレイごとにAIが生成するため、同じジャンルでも登場人物や展開が変化します。
+ストーリーはプレイごとにAIが生成するため、同じジャンルとモデルを選んでも、登場人物や展開、結末が変化します。
 
 ---
 
-> **ログファイルについて**
->
-> 現在はデバッグやプレイ内容の確認のため、`game.log`
-> にゲーム進行の情報を記録しています。
-> 本アプリは、動作状況やAIによるストーリー生成の情報に加え、実際に参照した背景画像・結果画像・BGMのファイル名を
-> `game.log` に記録します。
-> ログファイルは起動を重ねるごとに追記されますので、不要になった場合は削除していただいて問題ありません。
+## ログファイルについて
+
+動作状況、AIによる生成処理、使用した背景画像・結果画像・BGMなどは `game.log` に記録されます。
+
+ログは起動を重ねるごとに追記されます。デバッグやプレイ内容の確認に使用できます。不要になったログファイルは削除しても問題ありません。
 
 ---
 
@@ -104,24 +119,17 @@ ENDに加えて、エピローグやプレイ内容に応じたAIコメントが
 
 ### 必須
 
--   [Ollama](https://ollama.com/)
--   Ollamaにダウンロード済みの対応モデル
+- [Ollama](https://ollama.com/)
+- Ollamaへダウンロード済みの対応モデル
 
-実行ファイル版ではPythonは不要です。Pythonソース版を使用する場合は、Python
-3.10以上を推奨します。
+実行ファイル版ではPythonは不要です。Pythonソース版を使用する場合は、Python 3.10以上を推奨します。
 
 ### 音声読み上げを使用する場合
 
--   [VOICEVOX](https://voicevox.hiroshiba.jp/)
--   音声を再生できる環境
+- [VOICEVOX](https://voicevox.hiroshiba.jp/)
+- 音声を再生できる環境
 
-VOICEVOXは任意です。起動していない場合でも、音声なしでゲームを遊べます。
-
-本アプリは、ローカル環境で動作するOllama APIおよびVOICEVOX
-ENGINEを利用します。
-
-> \[!NOTE\]
-> 本ソフトウェアは、同名または類似名称の既存の商標・製品・サービスとは関係ありません。
+VOICEVOXは任意です。起動していない場合でも、読み上げをOFFにしてテキストのみで遊べます。
 
 ---
 
@@ -129,16 +137,14 @@ ENGINEを利用します。
 
 この項目は、Pythonソース版から起動する場合に必要です。実行ファイル版では、別途インストールする必要はありません。
 
-次の外部ライブラリを使用します。
-
-``` bash
+```bash
 python -m pip install requests pygame
 ```
 
--   `requests`：Ollama APIおよびVOICEVOX ENGINEとの通信
--   `pygame`：VOICEVOX音声、BGM、効果音の再生
+- `requests`：Ollama APIおよびVOICEVOX ENGINEとの通信
+- `pygame`：VOICEVOX音声、BGM、効果音の再生
 
-`tkinter`はPythonの標準GUIライブラリです。環境によっては、Pythonとは別にTcl/Tk関連パッケージの導入が必要になる場合があります。
+`tkinter` はPythonの標準GUIライブラリです。環境によっては、Pythonとは別にTcl/Tk関連パッケージの導入が必要になる場合があります。
 
 ---
 
@@ -150,63 +156,63 @@ python -m pip install requests pygame
 
 ### 2. 使用するモデルをダウンロードする
 
-初期モデルは、`data/game_settings.json`で次のように設定されています。
+初期モデルは、`src/data/game_settings.json` で次のように設定されています。
 
-``` text
+```text
 gemma3:4b
 ```
 
 ダウンロード例：
 
-``` bash
+```bash
 ollama pull gemma3:4b
 ```
 
-ほかのOllama対応モデルも使用できます。ただし、JSON形式の指示に安定して応答でき、日本語の文章生成に向いたモデルを推奨します。
+ほかのOllama対応モデルも使用できます。ただし、JSON形式の指示へ安定して応答でき、日本語の文章生成に向いたモデルを推奨します。
 
 ### 3. VOICEVOXを準備する（任意）
 
 音声読み上げを使用する場合は、VOICEVOXをインストールし、本アプリより先に起動してください。
 
--   [VOICEVOX公式サイト](https://voicevox.hiroshiba.jp/)
--   [VOICEVOX GitHub](https://github.com/VOICEVOX/voicevox)
+- [VOICEVOX公式サイト](https://voicevox.hiroshiba.jp/)
+- [VOICEVOX GitHub](https://github.com/VOICEVOX/voicevox)
 
 本アプリにVOICEVOX本体は含まれていません。
 
 ### 4. アプリを起動する
 
-#### 実行ファイル版から起動する
+#### 実行ファイル版
 
-1.  GitHub ReleasesからWindows版のZIPファイルをダウンロードします。
-2.  ZIPファイルを任意の場所へ展開します。
-3.  Ollamaを起動します。
-4.  音声読み上げを使用する場合は、VOICEVOXも起動します。
-5.  展開したフォルダ内の `綴り文庫室.exe` をダブルクリックします。
+1. GitHub ReleasesからWindows版のZIPファイルをダウンロードします。
+2. ZIPファイルを任意の場所へ展開します。
+3. Ollamaを起動します。
+4. 読み上げを使用する場合は、VOICEVOXも起動します。
+5. 展開したフォルダ内の `綴り文庫室.exe` をダブルクリックします。
 
-``` text
+```text
 綴り文庫室/
 ├─ 綴り文庫室.exe
 └─ _internal/
 ```
 
-> \[!IMPORTANT\]
-> `綴り文庫室.exe`だけを別の場所へ移動せず、`_internal`フォルダと同じ配布フォルダ内で起動してください。
-
-実行ファイル版では、PythonおよびPythonライブラリを別途インストールする必要はありません。ただし、物語生成にはOllamaとダウンロード済みモデルが必要です。VOICEVOXは任意です。
+> [!IMPORTANT]
+> `綴り文庫室.exe` だけを別の場所へ移動せず、`_internal` フォルダと同じ配布フォルダ内で起動してください。
 
 初回起動時にWindowsやセキュリティソフトの確認画面が表示される場合があります。配布元とファイルを確認したうえで実行してください。
 
-#### Pythonソース版から起動する
+#### Pythonソース版
 
-リポジトリのフォルダで次のコマンドを実行します。
+リポジトリのルートから `src` フォルダへ移動し、`main.py` を実行します。
 
-``` bash
+```bash
+cd src
 python main.py
 ```
 
 WindowsのPython Launcherを使用する場合：
 
-``` bash
+```bat
+cd src
 py main.py
 ```
 
@@ -214,301 +220,248 @@ py main.py
 
 ## 実行ファイルの作成（開発者向け）
 
-Windows向け実行ファイルは、PyInstallerの`onedir`形式で作成します。`onedir`形式では、実行ファイルと必要なライブラリが1つのフォルダへまとめられます。
+Windows向け実行ファイルは、PyInstallerの `onedir` 形式で作成します。
 
 ### 1. PyInstallerをインストールする
 
-``` bash
+```bash
 python -m pip install pyinstaller
 ```
 
-WindowsのPython Launcherを使用する場合：
+### 2. `src` フォルダへ移動する
 
-``` bash
-py -m pip install pyinstaller
+```bat
+cd src
 ```
 
-インストール確認：
+### 3. 古いビルド結果を削除する
 
-``` bash
-python -m PyInstaller --version
-```
-
-### 2. 古いビルド結果を削除する
-
-コマンドプロンプトでプロジェクトフォルダへ移動し、次を実行します。
-
-``` bat
+```bat
 rmdir /s /q build 2>nul
 rmdir /s /q dist 2>nul
 del "綴り文庫室.spec" 2>nul
 ```
 
-### 3. `onedir`形式でビルドする
+### 4. `onedir` 形式でビルドする
 
-``` bat
+```bat
 python -m PyInstaller --clean --noconfirm --onedir --windowed --name "綴り文庫室" --icon "icon.ico" --add-data "data;data" --add-data "assets;assets" main.py
 ```
 
 主なオプション：
 
-| オプション         | 内容                                     |
-| ------------- | -------------------------------------- |
-| `--clean`     | PyInstallerの一時キャッシュを削除してからビルドします       |
-| `--noconfirm` | 既存の出力フォルダを確認なしで置き換えます                  |
-| `--onedir`    | 実行ファイルと依存ファイルを1つのフォルダへ出力します            |
-| `--windowed`  | 起動時にコンソール画面を表示しません                     |
-| `--name`      | 出力するアプリ名を指定します                         |
-| `--icon`      | Windows実行ファイルへ使用するICOアイコンを指定します        |
-| `--add-data`  | `data`や`assets`など、実行時に必要なファイルを配布物へ含めます |
-
-このビルドでは、次の2つのフォルダを配布物へ含めています。
-
-* `data`：ゲーム設定ファイルなど
-* `assets`：背景画像、結果画面画像、BGM・効果音用フォルダなど
-
-> \[!NOTE\]
-> Windowsでは`--add-data`のコピー元とコピー先をセミコロン`;`で区切ります。
-
-### 4. 出力を確認する
+| オプション | 内容 |
+| --- | --- |
+| `--clean` | PyInstallerの一時キャッシュを削除してからビルドします |
+| `--noconfirm` | 既存の出力フォルダを確認なしで置き換えます |
+| `--onedir` | 実行ファイルと依存ファイルを1つのフォルダへ出力します |
+| `--windowed` | 起動時にコンソール画面を表示しません |
+| `--name` | 出力するアプリ名を指定します |
+| `--icon` | Windows実行ファイルへICOアイコンを設定します |
+| `--add-data` | `data` と `assets` を配布物へ含めます |
 
 ビルドに成功すると、次のフォルダが作成されます。
 
-``` text
-dist/
+```text
+src/dist/
 └─ 綴り文庫室/
    ├─ 綴り文庫室.exe
    └─ _internal/
 ```
 
-配布するときは、`dist/綴り文庫室/`をフォルダごとZIP形式へ圧縮します。実行ファイルだけを取り出して配布しないでください。
+配布時は `dist/綴り文庫室/` をフォルダごとZIP形式へ圧縮してください。
 
-### Device Guardで`pyinstaller.exe`がブロックされる場合
+### Device Guardで `pyinstaller.exe` がブロックされる場合
 
-環境によっては、`pyinstaller`コマンドを直接実行すると、Device
-Guardによって`pyinstaller.exe`がブロックされることがあります。その場合は、Pythonからモジュールとして実行します。
+`pyinstaller` コマンドを直接実行できない場合は、次のようにPythonモジュールとして実行してください。
 
-``` bash
+```bash
 python -m PyInstaller --version
 ```
 
 本READMEのビルドコマンドも、この方式を使用しています。
 
-### アイコンがすぐに変わらない場合
-
-Windowsのアイコンキャッシュに古い表示が残ることがあります。実行ファイルや配布フォルダの名前を一時的に変更する、別の場所へコピーする、またはエクスプローラーを再起動すると、新しいアイコンが表示される場合があります。
-
 ---
 
 ## ファイル構成
 
-``` text
+```text
 プロジェクトフォルダ/
-├─ main.py
-├─ game_engine.py
-├─ game_prompts.py
-├─ llm_client.py
-├─ voicevox_client.py
-├─ audio_mixer.py
-├─ bgm_manager.py
-├─ background_manager.py
-├─ icon.ico
-├─ data/
-│  └─ game_settings.json
-├─ assets/
-│  ├─ backgrounds/
-│  ├─ result_images/
-│  ├─ bgm/          ← BGMの用意
-│  └─ sfx/          ← 効果音の用意
-├─ logs/
-├─ voice_cache/
 ├─ README.md
-└─ README_PLAY.md
+├─ README_PLAY.md
+├─ GUIDELINE.md
+├─ licenses/
+└─ src/
+   ├─ main.py
+   ├─ game_engine.py
+   ├─ game_prompts.py
+   ├─ llm_client.py
+   ├─ voicevox_client.py
+   ├─ audio_mixer.py
+   ├─ bgm_manager.py
+   ├─ background_manager.py
+   ├─ icon.ico
+   ├─ data/
+   │  └─ game_settings.json
+   ├─ assets/
+   │  ├─ backgrounds/
+   │  ├─ result_images/
+   │  ├─ bgm/
+   │  └─ sfx/
+   ├─ logs/
+   └─ voice_cache/
 ```
 
 ### 主なPythonファイル
 
--   `main.py`：Tkinter GUI、画面操作、ゲーム進行、画像・音声機能の連携  
--   `game_engine.py`：場面生成、選択結果、BAD END、GOOD END、再挑戦、要約    
--   `game_prompts.py`：AI生成用プロンプト、背景タグ、BGMタグの定義  
--   `llm_client.py`：Ollama APIとの通信、モデル一覧取得、生成キャンセル  
--   `voicevox_client.py`：VOICEVOX  
-    ENGINEとの通信、音声生成・再生・キャッシュ管理  
--   `audio_mixer.py`：VOICEVOX、BGM、SEが干渉しにくいようpygame mixerを管理  
--   `bgm_manager.py`：BGMタグから音源を選択し、ループ・フェード・音量を管理  
--   `background_manager.py`：背景タグに対応する画像候補の検索・ランダム選択を管理  
-
-### 素材フォルダ
-
-`assets/backgrounds/`
-には背景画像を配置します。同じタグ名のサブフォルダへ複数画像を追加できるため、画像数を増やす場合でもPythonコードの変更を最小限にできます。
-
-`assets/result_images/` にはタイトル画面やGAME
-CLEARなど、ゲーム進行に使用する固定画像を配置します。
-
-`assets/bgm/` と `assets/sfx/`
-は音源配置用です。**本リポジトリ／配布物には音源を収録していません。**
-利用者自身が使用権を持つ音源を用意し、下記の指定ファイル名へ変更して配置してください。
-**※ BGMと効果音は、配置していなくても起動できます。**  
-`logs/` は `game.log` の保存先、`voice_cache/`
-はVOICEVOXで生成した一時音声の保存先です。
+- `main.py`：Tkinter GUI、画面操作、ゲーム進行、画像・音声・保存機能の連携
+- `game_engine.py`：場面生成、選択判定、BAD END、GOOD END、再挑戦、要約、プレイ判定
+- `game_prompts.py`：AI生成用プロンプト、背景タグ、BGMタグ、「自由に綴る」の定義
+- `llm_client.py`：Ollama APIとの通信、モデル一覧取得、生成キャンセル
+- `voicevox_client.py`：VOICEVOXとの通信、音声生成・再生・キャッシュ管理
+- `audio_mixer.py`：VOICEVOX、BGM、SEが干渉しにくいようにpygame mixerを管理
+- `bgm_manager.py`：BGMタグから音源を選択し、ループ・フェード・音量を管理
+- `background_manager.py`：背景タグに対応する画像候補の検索・選択を管理
 
 ---
 
 ## 設定ファイル
 
-`data/game_settings.json`の主な初期値は次のとおりです。
+`src/data/game_settings.json` の主な初期値は次のとおりです。
 
-  -----------------------------------------------------------------------------------------------------------------
-  設定                                                  初期値 内容
-  ------------------------------- ---------------------------- ----------------------------------------------------
-  `game.total_scenes`                                      `5` 1ゲームの場面数
-
-  `game.max_retries`                                       `3` AI生成データの取得・解析に失敗した場合の再試行上限
-
-  `game.summary_max_characters`                          `100` 次の場面へ引き継ぐ物語要約の最大文字数
-
-  `ollama.base_url`                   `http://localhost:11434` Ollama APIの接続先
-
-  `ollama.default_model`                           `gemma3:4b` 初期選択モデル
-
-  `ollama.timeout_seconds`                               `120` Ollama通信のタイムアウト秒数
-
-  `voicevox.base_url`                 `http://127.0.0.1:50021` VOICEVOX ENGINEの接続先
-
-  `voicevox.speaker_id`                                    `3` 初期話者ID
-
-  `voicevox.volume`                                      `1.0` VOICEの初期音量
-
-  `sfx.volume`                                           `0.2` SEの初期音量
-
-  `bgm.volume`                                           `0.2` BGMの初期音量
-
-  `bgm.fade_ms`                                          `800` BGM切り替え時のフェード時間（ミリ秒）
-  -----------------------------------------------------------------------------------------------------------------
-
----
-
-## BGM・効果音について
-
-v2はBGMと効果音の再生機能を備えていますが、**音源ファイル自体は本リポジトリ／配布物へ収録していません。**
-
-利用する場合は、利用者自身が権利・利用条件を確認した音源を用意し、次のファイル名へ変更して配置してください。音源が見つからない場合でも、ゲーム本体・背景表示・VOICEVOXは継続して利用できます。
-
-### BGM
-
-配置先：
-
-``` text
-assets/bgm/
-```
-
-通常はMP3を使用します。OGGも第2候補として読み込みます。  
-
-  ファイル名         用途  
-  ------------------ --------------------
-  `title.mp3`        タイトル画面  
-  `calm.mp3`         静か・穏やかな場面  
-  `bright.mp3`       明るい・楽しい場面  
-  `mystery.mp3`      謎・調査・違和感  
-  `tension.mp3`      緊迫・追跡・危機  
-  `battle.mp3`       戦闘・対決  
-  `sad.mp3`          悲しみ・別れ  
-  `horror.mp3`       怪異・恐怖  
-  `ending.mp3`       エピローグ  
-  `game_clear.mp3`   GAME CLEAR以降  
-
-たとえば、手元の音源 `my_calm_music.mp3`  
-を穏やかな場面で使いたい場合は、`calm.mp3` に名前を変更して  
-`assets/bgm/` へ配置します。  
-
-### 効果音（SE） 
-
-配置先：  
-
-``` text
-assets/sfx/
-```
-
-  ファイル名       用途  
-  ---------------- ----------------------
-  `correct.mp3`    正しい選択をしたとき  
-  `bad_end.mp3`    BAD END  
-  `good_end.mp3`   GOOD END  
-
-### 音源の権利について  
-
-本プロジェクトは、利用者が追加した音源の利用許諾を提供するものではありません。第三者が制作した音源を使用する場合は、各音源のライセンス、利用規約、クレジット表記、再配布可否などを必ず確認してください。  
-
-特に、本アプリを再配布・配信・動画投稿などに使用する場合は、使用する音源がその用途を許可しているかをご自身で確認してください。  
+| 設定 | 初期値 | 内容 |
+| --- | ---: | --- |
+| `game.total_scenes` | `5` | 1ゲームの場面数 |
+| `game.max_retries` | `3` | AI生成データの取得・解析に失敗した場合の再試行上限 |
+| `game.summary_max_characters` | `100` | 次の場面へ引き継ぐ物語要約の最大文字数 |
+| `ollama.base_url` | `http://localhost:11434` | Ollama APIの接続先 |
+| `ollama.default_model` | `gemma3:4b` | 初期選択モデル |
+| `ollama.timeout_seconds` | `120` | Ollama通信のタイムアウト秒数 |
+| `voicevox.base_url` | `http://127.0.0.1:50021` | VOICEVOX ENGINEの接続先 |
+| `voicevox.speaker_id` | `3` | 初期話者ID |
+| `voicevox.volume` | `1.0` | VOICEの初期音量 |
+| `sfx.volume` | `0.2` | SEの初期音量 |
+| `bgm.volume` | `0.2` | BGMの初期音量 |
+| `bgm.fade_ms` | `800` | BGM切り替え時のフェード時間（ミリ秒） |
 
 ---
 
 ## 収録ジャンル
 
-v2の初期設定には、次の30ジャンルが登録されています。
+v3の初期設定には、次の30ジャンルが登録されています。
 
-* 王道ファンタジー
-* 恋愛告白
-* 明るいミステリー
-* 怪談
-* モンスターサバイバル
-* 宇宙SF
-* 異世界転生
-* 刑事ドラマ
-* シリアスドラマ
-* コメディ
-* ゾンビパニック
-* 青春部活
-* 無人島サバイバル
-* 探検隊
-* 海賊冒険
-* 忍者
-* スパイアクション
-* タイムトラベル
-* 昭和レトロ冒険
-* 法廷ドラマ
-* お仕事体験
-* 学園七不思議
-* 西部劇
-* 日常の不思議
-* 旅情ドラマ
-* 時代劇
-* 探偵ミステリー
-* 料理チャレンジ
-* 格闘アクション
-* ラブコメ
+- 王道ファンタジー
+- 恋愛告白
+- 明るいミステリー
+- 怪談
+- モンスターサバイバル
+- 宇宙SF
+- 異世界転生
+- 刑事ドラマ
+- シリアスドラマ
+- コメディ
+- ゾンビパニック
+- 青春部活
+- 無人島サバイバル
+- 探検隊
+- 海賊冒険
+- 忍者
+- スパイアクション
+- タイムトラベル
+- 昭和レトロ冒険
+- 法廷ドラマ
+- お仕事体験
+- 学園七不思議
+- 西部劇
+- 日常の不思議
+- 旅情ドラマ
+- 時代劇
+- 探偵ミステリー
+- 料理チャレンジ
+- 格闘アクション
+- ラブコメ
 
-ジャンル名と説明は、`data/game_settings.json`の`genres`から追加・編集できます。
+ジャンル名と生成方針は、`src/data/game_settings.json` の `genres` から追加・編集できます。
 
 ---
 
-## 背景画像とBGMタグ
+## 「自由に綴る」モード
 
-v2では、各Sceneの生成結果に `background_tag` と `bgm_tag` が含まれます。
+ジャンル欄の末尾にある「自由に綴る」を選ぶと、物語表示欄が専用の複数行入力欄へ切り替わります。
 
-`background_tag`
-は「現在いる場所」を表し、`room`、`forest`、`school`、`cafe`、`spaceship_bridge`
-などの候補からAIが選択します。アプリはタグに対応する画像を
-`assets/backgrounds/` から探して表示します。
+遊びたい物語を1000文字以内で入力し、「ゲーム開始」を押してください。AIが入力内容を短編ゲーム向けのジャンル名・舞台・主人公・目的などへ整理してから、第1場面を生成します。
 
-同じタグに複数画像を登録する場合は、タグ名のサブフォルダを使用できます。
+入力原文は整理後の設定と一緒にAIへ渡されます。生成に失敗した場合や生成をキャンセルした場合は、入力内容を残したまま専用画面へ戻ります。
 
-``` text
-assets/backgrounds/cafe/
-├─ quiet_interior_01.jpg
+---
+
+## 背景画像
+
+v3では、各場面の生成結果に `background_tag` が含まれます。AIは65種類の背景タグから現在地に合うものを選び、アプリは対応する画像を `src/assets/backgrounds/` から探して「情景窓」へ表示します。
+
+同じタグへ複数画像を登録する場合は、タグ名のサブフォルダを使用できます。
+
+```text
+src/assets/backgrounds/cafe/
+├─ quiet_interior_01.png
 ├─ retro_kissaten_01.jpg
 └─ window_seating_02.jpg
 ```
 
-複数候補がある場合は、直前に使用した画像をできるだけ避けながら候補を選択します。画像データをすべて起動時に読み込む方式ではないため、背景画像を100枚以上へ増やすことも想定した構成です。
+複数候補がある場合は、直前に使用した画像をできるだけ避けながら選択します。画像は必要なときに読み込むため、多数の画像を追加することも想定した構成です。
 
-`bgm_tag` は場所ではなく場面の雰囲気を表します。通常Sceneでは
-`calm`、`bright`、`mystery`、`tension`、`battle`、`sad`、`horror`
-からAIが選択し、対応する音源が存在する場合だけ再生します。
+---
 
-タイトル・エピローグ・GAME CLEARでは、ゲーム進行側がそれぞれ
-`title`、`ending`、`game_clear` を使用します。
+## BGM・効果音
+
+v3には、BGM 10曲と効果音3種類を収録しています。音源が不足・削除されている場合でも、物語生成、背景表示、VOICEVOXなど、利用可能な機能でゲームを続行します。
+
+### BGM
+
+配置先：
+
+```text
+src/assets/bgm/
+```
+
+| ファイル名 | 用途 |
+| --- | --- |
+| `title.mp3` | タイトル画面 |
+| `calm.mp3` | 静か・穏やかな場面 |
+| `bright.mp3` | 明るい・楽しい場面 |
+| `mystery.mp3` | 謎・調査・違和感 |
+| `tension.mp3` | 緊迫・追跡・危機 |
+| `battle.mp3` | 戦闘・対決 |
+| `sad.mp3` | 悲しみ・別れ |
+| `horror.mp3` | 怪異・恐怖 |
+| `ending.mp3` | エピローグ |
+| `game_clear.mp3` | GAME CLEAR以降 |
+
+通常場面では、AIが `calm`、`bright`、`mystery`、`tension`、`battle`、`sad`、`horror` から1つを選びます。タイトル、エピローグ、GAME CLEARでは、アプリが専用BGMを指定します。
+
+MP3を優先して読み込み、同名のMP3がない場合はOGGも候補にします。収録曲を差し替える場合は、同じファイル名で配置してください。
+
+### 効果音
+
+配置先：
+
+```text
+src/assets/sfx/
+```
+
+| ファイル名 | 用途 |
+| --- | --- |
+| `correct.mp3` | 正しい選択をしたとき |
+| `bad_end.mp3` | BAD END |
+| `good_end.mp3` | GOOD END |
+
+### 収録音源について
+
+収録BGMは、ローカル音楽生成モデル **ACE-Step 1.5** を利用して制作しています。
+
+収録音源には、アプリケーションコードのMIT Licenseや画像のCC BY 4.0が自動的に適用されるわけではありません。音源単体の再利用・再配布・改変物の公開を行う場合は、使用した生成モデルや関連ツールの利用条件を確認してください。
+
+利用者が別の音源へ差し替える場合は、その音源のライセンス、利用規約、クレジット表記、再配布可否を利用者自身で確認してください。
 
 ---
 
@@ -516,12 +469,11 @@ assets/backgrounds/cafe/
 
 本文は1文字ずつ表示され、句読点や改行では少し長めの間を取ります。
 
--   表示中にEnterキーを押すと、その文章をすぐに全文表示します。
--   本文の表示が完了するまで、選択肢の決定操作は無効です。
--   VOICEVOX読み上げがONの場合は、最初の音声チャンクが完成してからタイピング表示と音声再生を開始します。
--   後続の音声は、本文生成と並行して準備されます。
-
-待機中は、「物語を生成しています」のメッセージが、点の増減する簡単なアニメーション付きで表示されます。
+- 表示中にEnterキーを押すと、残りの文章をすぐに全文表示し、現在の読み上げを停止します。
+- 文章がすでに全文表示されている場合は、Enterキーで残っている読み上げを停止できます。
+- 本文の表示が完了するまで、選択肢の決定操作は無効です。
+- VOICEVOX読み上げがONの場合は、最初の音声チャンクが完成してからタイピング表示と再生を開始します。
+- 後続の音声は、本文表示と並行して準備されます。
 
 ---
 
@@ -529,56 +481,57 @@ assets/backgrounds/cafe/
 
 誤った選択肢を選ぶと、その場面の流れに沿ったBAD ENDが表示されます。
 
-「直前の選択肢へ」を選ぶと、同じ場面、本文、選択肢へ戻ります。場面をAIで再生成しないため、直前の状況を保ったまま別の選択を試せます。
+「直前の選択肢へ」を押すと、同じ場面・本文・選択肢へ戻ります。場面をAIで再生成しないため、直前の状況を保ったまま別の選択を試せます。
 
-「最初から」を選ぶと、最初の場面から新しいゲームを開始できます。
-
----
-
-## GOOD END後の追加生成
-
-5場面目で正しい選択肢を選ぶと、通常のGOOD
-ENDに続いて、次の内容を追加生成します。
-
-1. 最終選択の結果
-2. GOOD END
-3. エピローグ
-4. ゲームクリアメッセージ
-5. AI COMMENT
-6. プレイ記録
-
-
-追加生成に失敗した場合でも、固定のエピローグとメッセージを表示してゲームを終了できるようにしています。
+「最初から」を押した場合は、新しい物語を第1場面から生成します。
 
 ---
 
-## VOICEVOXについて
+## GOOD END後の演出
 
-本アプリは、音声合成ソフトウェアVOICEVOXおよびローカルで動作するVOICEVOX
-ENGINEを利用します。
+5場面目で正しい選択肢を選ぶと、次の内容が順番に表示されます。
 
--   読み上げのON／OFF
--   話者IDの指定
--   生成済み音声の順次再生
--   読み上げの途中停止
--   一時WAVファイルの自動管理
--   VOICEVOX未起動時のテキストのみでの続行
+1. GOOD END
+2. EPILOGUE
+3. GAME CLEAR
+4. AI COMMENT
+5. PLAY RECORD
+6. 終了案内
 
-> \[!IMPORTANT\]
-> 生成した音声を公開・配布する場合は、VOICEVOX本体と使用したキャラクター（話者）の利用規約・クレジット表記をご確認ください。
+各項目は自動では進まず、「エピローグへ」「GAME CLEAR」「AI COMMENT」「PLAY RECORD」「最後に」の各ボタンで読み進めます。
+
+PLAY RECORDには、バッドエンド到達回数、直前の選択肢へ戻った回数、総選択回数が表示されます。
+
+追加生成に失敗した場合でも、固定のエピローグとメッセージを使用してゲームを終了できるようにしています。
+
+---
+
+## バックログと保存
+
+### バックログ
+
+「バックログ」を押すと、表示完了済みの本文、選択結果、エンディングなどを別ウィンドウで確認できます。
+
+### テキスト保存
+
+ゲームクリア後に「テキスト保存」を押すと、開始日時、ジャンル、使用モデルを含むプレイ記録をUTF-8のテキストファイルとして保存できます。
+
+### 音声保存
+
+VOICEVOX読み上げを使用してゲームをクリアした場合は、「音声保存」から今回生成したWAVファイルを任意のフォルダへ保存できます。ファイル名には再生順の連番が付きます。
 
 ---
 
 ## 既知の制限事項
 
--   AI生成のため、文章の品質、展開、固有名詞、選択肢の自然さにはばらつきがあります。
--   使用モデルによっては、指定したJSON形式を正しく返せず、生成を再試行する場合があります。
--   PC性能やモデルサイズによって、場面生成に時間がかかります。
--   VOICEVOXの初回音声生成や長い文章では、読み上げ開始まで待ち時間が発生する場合があります。
--   読み上げ停止後も、VOICEVOX ENGINEへ送信済みの処理が一時的に継続する場合があります。停止後に完成した音声は再生されません。
--   OllamaまたはVOICEVOXの接続先を変更している場合は、`data/game_settings.json`の設定変更が必要です。
--   BGM・効果音は同梱していません。使用する場合は利用者側で指定ファイル名の音源を用意する必要があります。
--   背景画像や音源が不足していても可能な範囲でゲームを続行しますが、その素材に対応する演出は行われません。
+- AI生成のため、文章の品質、展開、固有名詞、選択肢の自然さにはばらつきがあります。
+- 使用モデルによっては、指定したJSON形式を正しく返せず、生成を再試行する場合があります。
+- PC性能やモデルサイズによって、場面生成に時間がかかります。
+- 「自由に綴る」は、通常モードより開始設定の整理処理が1回増えます。
+- VOICEVOXの初回音声生成や長い文章では、読み上げ開始まで待ち時間が発生する場合があります。
+- 読み上げ停止後も、VOICEVOX ENGINEへ送信済みの処理が一時的に継続する場合があります。停止後に完成した音声は再生されません。
+- OllamaまたはVOICEVOXの接続先を変更している場合は、`src/data/game_settings.json` の変更が必要です。
+- 背景画像や音源が不足していても可能な範囲でゲームを続行しますが、その素材に対応する演出は行われません。
 
 ---
 
@@ -588,63 +541,54 @@ ENGINEを利用します。
 
 使用した主なモデル・プラン：
 
--   GPT-5.6（Chat・Work）
--   ChatGPT Plus
+- GPT-5.6（Chat・Work）
+- ChatGPT Plus
 
-主な利用内容は以下のとおりです。
+主な利用内容：
 
--   開発計画・設計方針の整理（Chat・Work）
--   アプリ全体の構成検討（Chat・Work）
--   Pythonコードの実装支援（Chat・Work）
--   リファクタリングおよび改善提案（Chat）
--   README・ドキュメントの作成支援（Chat・Work）
--   プロンプト設計・改善（Chat）
--   ゲーム仕様のアイデア出し（Chat）
--   ストーリー構成のアイデア出し（Chat・Work）
--   不具合調査および原因分析（Chat・Work）
--   画像生成、画像の追加（Chat・Work）
--   画像と音源へのタグ付け（Work）
+- 開発計画・設計方針の整理
+- Pythonコードの実装支援
+- リファクタリングおよび改善提案
+- README・利用マニュアルの作成支援
+- プロンプト設計・改善
+- ゲーム仕様のアイデア出し
+- 不具合調査および原因分析
+- 画像生成、画像の追加、素材へのタグ付け
+
 
 最終的な設計・実装・動作確認・公開判断は開発者本人が行っています。
 
 開発に携わったすべての研究者、開発者、関係者の皆様に、心より感謝申し上げます。
 
-### 制作期間
-
--   **綴り文庫室 v1：2026年7月26日 ~ 2026年7月29日**
--   **綴り文庫室 v2：2026年7月30日 ~ 2026年8月8日**
-
 ---
 
 ## コントリビューションについて
 
-本リポジトリは個人学習・個人制作を目的としています。そのため、Pull
-Request（PR）はお受けできません。ご了承ください。
+本リポジトリは個人学習・個人制作を目的としています。そのため、Pull Request（PR）はお受けできません。ご了承ください。
 
 ---
 
 ## 注意事項
 
-本アプリの物語、選択肢、エンディング、AI
-COMMENTは、ローカルLLMによって自動生成されます。
+本アプリの物語、選択肢、エンディング、AI COMMENTは、ローカルLLMによって自動生成されます。
 
 出力内容の正確性、安全性、完全性は保証されません。実在する人物、団体、場所、出来事などと似た内容が生成された場合でも、原則として偶然によるものです。
 
 各Ollamaモデルの利用条件については、モデル提供元のライセンスをご確認ください。
 
+VOICEVOXで生成した音声を公開・配布する場合は、VOICEVOX本体と使用したキャラクター（話者）の利用規約・クレジット表記をご確認ください。
+
 ---
 
 ## 免責事項
 
-本アプリの利用、設定変更、外部ソフトウェアとの連携、生成された文章や音声の使用などによって生じた損害、不具合、データ損失その他の問題について、作者は責任を負いません。
+本アプリの利用、設定変更、外部ソフトウェアとの連携、生成された文章・画像・音声の使用などによって生じた損害、不具合、データ損失その他の問題について、作者は責任を負いません。
 
 利用者自身の責任においてご使用ください。
 
----
-
 ## このプロジェクトのライセンス
 
-本プロジェクトでは、アプリケーションコードとプロンプト・画像などのコンテンツに異なるライセンスを設定しています。
+本プロジェクトでは、アプリケーションコードとプロンプト・画像などのコンテンツに、それぞれ異なるライセンスを設定しています。
 
 ### アプリケーションコード
 
@@ -655,24 +599,13 @@ COMMENTは、ローカルLLMによって自動生成されます。
 
 著作権表示とライセンス文の同梱が必要です。詳細は、[LICENSE-CODE](./licenses/application/LICENSE-CODE.txt)をご確認ください。
 
-クレジット例：
-
 ```text
 Code by AglaoDev-jp © 2026, licensed under the MIT License.
 ```
 
 ### アイコン
 
-本プロジェクトに含まれるアプリアイコンは、MIT Licenseを適用します。
-
-* **ライセンス：MIT License**
-* 商用利用：可能
-* 改変：可能
-* 再配布：可能
-
-著作権表示とライセンス文の同梱が必要です。
-
-クレジット例：
+本プロジェクトに含まれるアプリアイコンには、MIT Licenseを適用します。
 
 ```text
 App icon by AglaoDev-jp © 2026, licensed under the MIT License.
@@ -680,27 +613,7 @@ App icon by AglaoDev-jp © 2026, licensed under the MIT License.
 
 ### プロンプト関連データ
 
-ジャンル説明やゲーム生成用プロンプトには、Creative Commons Attribution
-4.0 International（CC BY 4.0）を適用します。
-
-* 商用利用：可能
-* 改変：可能
-* 再配布：可能
-* クレジット表記：必要
-
-詳細は、[LICENSE-PROMPT](./licenses/application/LICENSE-PROMPT.txt)をご確認ください。
-
-クレジット例：
-
-```text
-Prompt Collection by AglaoDev-jp
-Licensed under CC BY 4.0
-```
-
-### 画像素材
-
-本プロジェクトに含まれる背景画像やゲーム内表示用画像には、Creative Commons Attribution
-4.0 International（CC BY 4.0）を適用します。
+ジャンル説明やゲーム生成用プロンプトには、Creative Commons Attribution 4.0 International（CC BY 4.0）を適用します。
 
 * **ライセンス：CC BY 4.0**
 * 商用利用：可能
@@ -708,18 +621,42 @@ Licensed under CC BY 4.0
 * 再配布：可能
 * クレジット表記：必要
 
-詳細は、[LICENSE-IMAGE](./licenses/application/LICENSE-IMAGE.txt)をご確認ください。
-
-クレジット例：
+詳細は、[LICENSE-PROMPT](./licenses/application/LICENSE-PROMPT.txt)をご確認ください。
 
 ```text
-Image Collection by AglaoDev-jp
+Prompt Collection by AglaoDev-jp
+
 Licensed under CC BY 4.0
 ```
 
----
+### 画像素材
 
-※ BGM・効果音など、利用者が別途用意する外部素材には、それぞれの素材提供元が定めるライセンスが適用されます。
+本プロジェクトに含まれる背景画像やゲーム内表示用画像には、Creative Commons Attribution 4.0 International（CC BY 4.0）を適用します。
+
+* **ライセンス：CC BY 4.0**
+* 商用利用：可能
+* 改変：可能
+* 再配布：可能
+* クレジット表記：必要
+
+CC BY 4.0の条件に従い、クレジットを表示することで、画像の加工・編集や、加工した画像の再配布にも利用できます。
+
+詳細は、[LICENSE-IMAGE](./licenses/application/LICENSE-IMAGE.txt)をご確認ください。
+
+```text
+Image Collection by AglaoDev-jp
+
+Licensed under CC BY 4.0
+```
+
+### 音源
+
+本プロジェクトに収録されているBGM・効果音は、AI音楽生成モデル **ACE-Step 1.5** を使用して生成しています。
+
+AI生成音源については、著作権をはじめとする権利関係に現時点で不明確な部分があるため、本プロジェクトでは収録音源に対してMIT LicenseやCC BY 4.0などのライセンスを**独自に付与していません。**
+
+収録音源の生成方法や取り扱いについては、[BGM・効果音](#bgm効果音)および[収録音源について](#収録音源について)をご確認ください。
+
 
 ---
 
@@ -727,42 +664,43 @@ Licensed under CC BY 4.0
 
 ### ライセンスファイル一覧
 
--   [Python License](./licenses/LICENSE-PSF.txt)
--   [Tcl/Tk License](./licenses/third_party/LICENSE-TclTk.txt)
--   [Pygame LGPL v2.1](./licenses/third_party/LGPL_v2.1.txt)
--   [Requests Apache License 2.0](./licenses/third_party/requests_LICENSE.txt)
--   [Requests NOTICE](./licenses/third_party/requests_NOTICE.txt)
+* [Python License](./licenses/LICENSE-PSF.txt)
+* [Tcl/Tk License](./licenses/third_party/LICENSE-TclTk.txt)
+* [Pygame LGPL v2.1](./licenses/third_party/LGPL_v2.1.txt)
+* [Requests Apache License 2.0](./licenses/third_party/requests_LICENSE.txt)
+* [Requests NOTICE](./licenses/third_party/requests_NOTICE.txt)
 
 ### Python
 
--   Copyright © 2001 Python Software Foundation. All rights reserved.
--   Licensed under the PSF License Version 2.
--   [Python 公式ライセンス](https://docs.python.org/3/license.html)
+* Copyright © 2001 Python Software Foundation. All rights reserved.
+* Licensed under the PSF License Version 2.
+* [Python公式ライセンス](https://docs.python.org/3/license.html)
 
 ### Tkinter / Tcl/Tk
 
-Tkinter は Python に含まれる GUI ライブラリですが、その動作には Tcl/Tk
-が使用されています。
+TkinterはPythonに含まれるGUIライブラリですが、その動作にはTcl/Tkが使用されています。
 
--   [Tcl/Tk License](https://www.tcl.tk/software/tcltk/license.html)
+* [Tcl/Tk License](https://www.tcl.tk/software/tcltk/license.html)
 
 ### Pygame
 
--   License: LGPL v2.1
--   [ライセンスファイル](./licenses/third_party/LGPL_v2.1.txt)
+* License: LGPL v2.1
+* [ライセンスファイル](./licenses/third_party/LGPL_v2.1.txt)
 
 ### Requests
 
--   License: Apache License 2.0
--   [ライセンスファイル](./licenses/third_party/requests_LICENSE.txt)
--   [NOTICE](./licenses/third_party/requests_NOTICE.txt)
+* License: Apache License 2.0
+* [ライセンスファイル](./licenses/third_party/requests_LICENSE.txt)
+* [NOTICE](./licenses/third_party/requests_NOTICE.txt)
 
-### 外部ソフトウェア
+### 外部ソフトウェア・生成ツール
 
--   [Ollama](https://ollama.com/)
--   [VOICEVOX](https://voicevox.hiroshiba.jp/)
+* [Ollama](https://ollama.com/)
+* [VOICEVOX](https://voicevox.hiroshiba.jp/)
+* [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5)
 
 これらのプロジェクトの開発者、貢献者、関係者の皆様に、心より感謝申し上げます。
+
 
 ---
 

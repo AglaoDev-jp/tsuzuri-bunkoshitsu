@@ -25,7 +25,10 @@ from game_prompts import (
     BASE_SYSTEM_PROMPT,
     SUMMARY_SYSTEM_PROMPT,
     ENDING_SYSTEM_PROMPT,
+    FREE_STORY_REQUEST_MAX_CHARACTERS,
+    FREE_STORY_SETUP_SYSTEM_PROMPT,
     build_final_scene_prompt,
+    build_free_story_setup_prompt,
     build_scene_prompt,
     build_summary_prompt,
     build_ending_package_prompt,
@@ -125,6 +128,93 @@ class GameEngine:
         self.bad_end_count = 0
         self.retry_count = 0
         self.choice_count = 0
+
+    def prepare_free_story(self, user_request: str) -> None:
+        """
+        自由入力を、既存のジャンル名とジャンル設定へ整理して反映する。
+
+        この処理が成功したあとに通常の ``start()`` を呼ぶことで、第1場面以降は
+        通常モードとまったく同じ生成・検証・進行処理を利用できる。入力原文も
+        整理済み設定と一緒に残し、LLMの整理で希望が抜け落ちにくいようにする。
+        """
+        normalized_request = user_request.strip()
+        if not normalized_request:
+            raise GameDataError("遊びたい物語を入力してください。")
+        if len(normalized_request) > FREE_STORY_REQUEST_MAX_CHARACTERS:
+            raise GameDataError(
+                "遊びたい物語は"
+                f"{FREE_STORY_REQUEST_MAX_CHARACTERS}文字以内で入力してください。"
+            )
+
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                data = self.llm_client.generate_json(
+                    system_prompt=FREE_STORY_SETUP_SYSTEM_PROMPT,
+                    user_prompt=build_free_story_setup_prompt(
+                        user_request=normalized_request,
+                        total_scenes=self.total_scenes,
+                    ),
+                    think=False,
+                    # 本文生成より少し低くし、開始設定の形式と内容を安定させる。
+                    temperature=0.4,
+                )
+
+                # 既存GameEngineが必要とする2項目だけを必須とし、タグは従来と
+                # 同じフォールバックを使う。小さなモデルの部分的な返答でも、
+                # ユーザーの入力を失わず安全にゲームを開始しやすくする。
+                genre_name = str(data.get("genre_name", "")).replace(
+                    "\n", " "
+                ).strip()
+                genre_prompt = str(data.get("genre_prompt", "")).strip()
+                if not genre_name:
+                    raise GameDataError("自由入力のgenre_nameがありません。")
+                if not genre_prompt:
+                    raise GameDataError("自由入力のgenre_promptがありません。")
+
+                background_tag = str(
+                    data.get("background_tag", "")
+                ).lower().strip()
+                if background_tag not in BACKGROUND_TAG_VALUES:
+                    background_tag = "none"
+
+                bgm_tag = str(data.get("bgm_tag", "")).lower().strip()
+                if bgm_tag not in SCENE_BGM_TAG_VALUES:
+                    bgm_tag = "calm"
+
+                # 表示名とプロンプトが極端に長くなっても、後続の場面プロンプトを
+                # 不必要に圧迫しないよう十分な余裕を残して上限を設ける。
+                self.genre_name = genre_name[:40]
+                organized_prompt = genre_prompt[:2000].rstrip()
+                self.genre_prompt = (
+                    "ユーザーが入力した希望:\n"
+                    f"{normalized_request}\n\n"
+                    "ゲーム開始用に整理した設定:\n"
+                    f"{organized_prompt}\n\n"
+                    f"第1場面の背景タグ候補: {background_tag}\n"
+                    f"第1場面のBGMタグ候補: {bgm_tag}\n"
+                    "ユーザーの希望を最優先し、結末はプレイヤーの選択を通して決める。"
+                )
+                self.logger(
+                    "自由入力を開始設定へ整理しました: "
+                    f"genre={self.genre_name}, "
+                    f"background_tag={background_tag}, bgm_tag={bgm_tag}"
+                )
+                return
+            except LLMGenerationCancelled:
+                # キャンセル操作は再試行せず、画面側の即時復帰へ任せる。
+                raise
+            except (LLMClientError, GameDataError) as exc:
+                last_error = exc
+                self.logger(
+                    "自由入力の整理に失敗しました"
+                    f"（{attempt}/{self.max_retries}）: {exc}"
+                )
+
+        raise GameDataError(
+            "自由入力の開始設定を整理できませんでした: "
+            f"{last_error}"
+        )
 
     def start(self) -> Scene:
         """
