@@ -33,16 +33,22 @@ VOICEVOXによる音声生成、WAVキャッシュ、連続再生を行うモジ
 from __future__ import annotations
 
 import hashlib
+import io
 import queue
 import re
 import threading
 import time
-from dataclasses import dataclass
+import tempfile
+import wave
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
+from uuid import uuid4
 
 import pygame
 import requests
+
+from performance_monitor import DISABLED_MONITOR, PerformanceMonitor, PerformanceTrace
 
 from audio_mixer import (
     MIXER_LOCK,
@@ -68,6 +74,10 @@ class VoiceJob:
     index: int
     # 最後のチャンクだけが完了通知を持つ。途中のチャンクでは呼び出さない。
     on_complete: Callable[[], None] | None = None
+    # 予約時の操作を固定する。別の画面へ進んでも新しい操作のログへ混ぜない。
+    performance: PerformanceMonitor = DISABLED_MONITOR
+    trace: PerformanceTrace | None = None
+    queued_at: float = field(default_factory=time.perf_counter)
 
 
 @dataclass(frozen=True)
@@ -78,6 +88,24 @@ class AudioJob:
     wav_path: Path
     # 対応する読み上げ要求が最後まで再生されたことを上位へ知らせる。
     on_complete: Callable[[], None] | None = None
+
+
+@dataclass
+class FirstChunkPrefetch:
+    """次に読む区間の先頭1チャンク。再生ジョブや完了通知は持たない。"""
+
+    text: str
+    cache_key: str
+    speaker_id: int
+    performance: PerformanceMonitor
+    trace: PerformanceTrace | None
+    prefetch_id: str = field(default_factory=lambda: uuid4().hex[:12])
+    done: threading.Event = field(default_factory=threading.Event)
+    # started/statusの読み書きと最終キャッシュへの公開は_prefetch_lockで保護する。
+    started: bool = False
+    status: str = "queued"
+    queued_at: float = field(default_factory=time.perf_counter)
+    prefetch_kind: str = "next_scene"
 
 
 class VoicevoxClient:
@@ -94,12 +122,20 @@ class VoicevoxClient:
         base_url: str = "http://127.0.0.1:50021",
         speaker_id: int = 3,
         cache_dir: Path | None = None,
+        performance: PerformanceMonitor | None = None,
+        performance_trace: PerformanceTrace | None = None,
+        voice_role: str = "unspecified",
+        chunk_index: int | None = None,
     ) -> None:
         """接続先、話者ID、キャッシュ保存先を初期化する。"""
         # APIパス連結時の二重スラッシュを防ぐ。
         self.base_url = base_url.rstrip("/")
         self.speaker_id = speaker_id
         self.cache_dir = cache_dir
+        self.performance = performance or DISABLED_MONITOR
+        self.performance_trace = performance_trace
+        self.voice_role = voice_role
+        self.chunk_index = chunk_index
 
         if self.cache_dir is not None:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -114,11 +150,46 @@ class VoicevoxClient:
             # 起動確認用途なので詳細例外は外へ出さず、真偽値だけを返す。
             return False
 
-    def create_or_get_audio(
+    def create_or_get_audio(self, text: str, *, cache_key: str) -> Path:
+        """先頭音声の通信とキャッシュを観測し、従来の合成処理へ委譲する。"""
+        with self.performance.measure(
+            self.performance_trace, "voice_audio", characters=len(text),
+            speaker_id=self.speaker_id, cache_hit=False,
+            text_sha256=hashlib.sha256(clean_text_for_voice(text).encode("utf-8")).hexdigest(),
+            phase="cache_lookup",
+            voice_role=self.voice_role, chunk_index=self.chunk_index,
+        ) as measurement:
+            return self._create_or_get_audio_impl(
+                text, cache_key=cache_key, measurement=measurement,
+            )
+
+    @staticmethod
+    def _record_wav_metrics(data: bytes, measurement: dict[str, Any]) -> None:
+        """PCM WAVの長さから合成実時間比を求める。読めなくても再生条件は変えない。
+
+        実時間比（RTF）は合成HTTP秒数÷音声秒数。文字数だけで比較すると、
+        句読点・読み方・話速の違いを見落とすため、音声の長さも併記する。
+        WAV以外や未対応形式を計測のために拒否することはしない。
+        """
+        measurement["audio_bytes"] = len(data)
+        try:
+            with wave.open(io.BytesIO(data), "rb") as wav:
+                rate = wav.getframerate()
+                duration = wav.getnframes() / rate if rate > 0 else 0
+                measurement.update(audio_seconds=duration, sample_rate=rate,
+                                   channels=wav.getnchannels())
+            if duration > 0 and isinstance(measurement.get("synthesis_ms"), (int, float)):
+                measurement["synthesis_rtf"] = measurement["synthesis_ms"] / 1000 / duration
+        except Exception:
+            # 計測情報の不足は音声処理の失敗と区別する。
+            measurement["wav_metadata_unavailable"] = True
+
+    def _create_or_get_audio_impl(
         self,
         text: str,
         *,
         cache_key: str,
+        measurement: dict[str, Any],
     ) -> Path:
         """
         文章のWAVを取得し、同じ条件のキャッシュがあれば再利用する。
@@ -139,32 +210,46 @@ class VoicevoxClient:
         )
         # ファイルが存在しても0バイトなら壊れたキャッシュなので再生成する。
         if wav_path.exists() and wav_path.stat().st_size > 0:
+            measurement["cache_hit"] = True
             return wav_path
 
         try:
             # 第1段階: 読み上げ文章と話者から、音声合成用クエリを作る。
+            query_started_at = time.perf_counter()
+            measurement["phase"] = "audio_query"
             query = requests.post(
                 f"{self.base_url}/audio_query",
                 params={"text": cleaned, "speaker": self.speaker_id},
                 timeout=30,
             )
+            measurement["audio_query_ms"] = (time.perf_counter() - query_started_at) * 1000
+            measurement["audio_query_http_status"] = query.status_code
             query.raise_for_status()
 
             # 第2段階: 作成済みクエリを本文として送り、WAVを合成する。
+            synthesis_started_at = time.perf_counter()
+            measurement["phase"] = "synthesis"
             synthesis = requests.post(
                 f"{self.base_url}/synthesis",
                 params={"speaker": self.speaker_id},
                 data=query.text,
                 timeout=60,
             )
+            measurement["synthesis_ms"] = (time.perf_counter() - synthesis_started_at) * 1000
+            measurement["synthesis_http_status"] = synthesis.status_code
             synthesis.raise_for_status()
 
             # 通信成功後にバイナリを保存し、0バイトでないことまで確認する。
             wav_path.parent.mkdir(parents=True, exist_ok=True)
+            write_started_at = time.perf_counter()
+            measurement["phase"] = "cache_write"
             wav_path.write_bytes(synthesis.content)
+            measurement["cache_write_ms"] = (time.perf_counter() - write_started_at) * 1000
             if wav_path.stat().st_size == 0:
                 wav_path.unlink(missing_ok=True)
                 raise VoicevoxError("生成された音声ファイルが空でした。")
+            self._record_wav_metrics(synthesis.content, measurement)
+            measurement["phase"] = "complete"
             return wav_path
 
         except requests.exceptions.ConnectionError as exc:
@@ -278,8 +363,10 @@ class VoicePipeline:
         self._sfx_volume = self._normalize_volume(sfx_volume)
 
         # Noneはスレッドを終了させる番兵（sentinel）として使う。
-        self._generation_queue: queue.Queue[VoiceJob | None] = queue.Queue()
+        self._generation_queue: queue.Queue[VoiceJob | FirstChunkPrefetch | None] = queue.Queue()
         self._playback_queue: queue.Queue[AudioJob | None] = queue.Queue(maxsize=3)
+        self._prefetch_lock = threading.Lock()
+        self._first_chunk_prefetch: FirstChunkPrefetch | None = None
 
         # request_lockは要求世代ID、mixer_lockはpygameの同時操作を保護する。
         self._request_lock = threading.Lock()
@@ -326,6 +413,8 @@ class VoicePipeline:
         *,
         speaker_id: int,
         on_complete: Callable[[], None] | None = None,
+        performance: PerformanceMonitor | None = None,
+        performance_trace: PerformanceTrace | None = None,
     ) -> None:
         """
         複数の文章を、指定順のまま1つの読み上げ要求として登録する。
@@ -360,6 +449,8 @@ class VoicePipeline:
                         if position == len(prepared) - 1
                         else None
                     ),
+                    performance=performance or DISABLED_MONITOR,
+                    trace=performance_trace,
                 )
             )
 
@@ -368,6 +459,8 @@ class VoicePipeline:
         parts: list[tuple[str, str]],
         *,
         speaker_id: int,
+        performance: PerformanceMonitor | None = None,
+        performance_trace: PerformanceTrace | None = None,
     ) -> Path | None:
         """
         読み上げ要求の最初のチャンクだけを先行生成してキャッシュする。
@@ -381,15 +474,140 @@ class VoicePipeline:
             return None
 
         first_chunk, cache_key, index = prepared[0]
+        first_key = f"{cache_key}_{index:03d}"
+        with self._prefetch_lock:
+            task = self._first_chunk_prefetch
+            if task is not None and (
+                task.text, task.cache_key, task.speaker_id
+            ) != (first_chunk, first_key, speaker_id):
+                # 話者・本文が変わった場合は、以前の条件の先読みを流用しない。
+                self._cancel_first_chunk_prefetch_locked()
+                task = None
+        if task is not None:
+            # このメソッドは既存の先頭音声準備ワーカーから呼ばれる。
+            # GUIでは待たず、実行中の同じ合成が終わるのを共有して重複通信を防ぐ。
+            waited_at = time.perf_counter()
+            task.done.wait()
+            (performance or DISABLED_MONITOR).event(
+                performance_trace, "voice_prefetch_use", started_at=waited_at,
+                prefetch_id=task.prefetch_id, result=task.status,
+                prefetch_kind=task.prefetch_kind,
+            )
+            if task.status == "cancelled":
+                # 停止・再プレイで待機が解除された場合、古い文章の合成を改めて
+                # 始めない。呼出元は表示世代・音声停止フラグで再生を抑止する。
+                return None
         client = VoicevoxClient(
             base_url=self.base_url,
             speaker_id=speaker_id,
             cache_dir=self.cache_dir,
+            performance=performance,
+            performance_trace=performance_trace,
+            voice_role="first_chunk", chunk_index=index,
         )
         return client.create_or_get_audio(
             first_chunk,
-            cache_key=f"{cache_key}_{index:03d}",
+            cache_key=first_key,
         )
+
+    def prefetch_first_chunk(
+        self,
+        parts: list[tuple[str, str]],
+        *,
+        speaker_id: int,
+        performance: PerformanceMonitor | None = None,
+        performance_trace: PerformanceTrace | None = None,
+        prefetch_kind: str = "next_scene",
+    ) -> None:
+        """現在の読み上げの合成を優先し、次に読む区間の先頭を末尾へ予約する。"""
+        prepared = self._prepare_chunks(parts)
+        if not prepared or self._shutdown_event.is_set():
+            return
+        chunk, cache_key, index = prepared[0]
+        task = FirstChunkPrefetch(
+            chunk, f"{cache_key}_{index:03d}", speaker_id,
+            performance or DISABLED_MONITOR, performance_trace,
+            prefetch_kind=prefetch_kind,
+        )
+        with self._prefetch_lock:
+            self._cancel_first_chunk_prefetch_locked()
+            self._first_chunk_prefetch = task
+            task.performance.event(
+                task.trace, "voice_prefetch_queued", prefetch_id=task.prefetch_id,
+                characters=len(chunk), speaker_id=speaker_id,
+                prefetch_kind=task.prefetch_kind,
+            )
+            # speak_sequenceで登録済みの現在文の後ろへ置く。別の合成スレッドを
+            # 増やさないため、先読みが現在の音声合成とVOICEVOXを奪い合わない。
+            self._generation_queue.put(task)
+
+    def _cancel_first_chunk_prefetch_locked(self) -> None:
+        """ロック保持中に取消。実行中HTTPの完了をGUIで待つことはしない。"""
+        task = self._first_chunk_prefetch
+        if task is not None and not task.done.is_set():
+            task.status = "cancelled"
+            task.done.set()
+            task.performance.event(
+                task.trace, "voice_prefetch_cancelled", prefetch_id=task.prefetch_id,
+                prefetch_kind=task.prefetch_kind,
+            )
+        self._first_chunk_prefetch = None
+
+    def _run_first_chunk_prefetch(self, task: FirstChunkPrefetch) -> None:
+        """専用の一時フォルダで合成し、取消されていない完成品だけを公開する。"""
+        with self._prefetch_lock:
+            if task is not self._first_chunk_prefetch or task.done.is_set() or task.started:
+                return
+            task.started = True
+        started_at = time.perf_counter()
+        cache_hit = False
+        error_type = None
+        task.performance.event(
+            task.trace, "voice_prefetch_started", prefetch_id=task.prefetch_id,
+            queue_wait_ms=(started_at - task.queued_at) * 1000,
+            prefetch_kind=task.prefetch_kind,
+        )
+        try:
+            client = VoicevoxClient(
+                base_url=self.base_url, speaker_id=task.speaker_id, cache_dir=self.cache_dir,
+            )
+            target = client._make_cache_path(
+                cleaned_text=clean_text_for_voice(task.text), cache_key=task.cache_key,
+            )
+            cache_hit = target.is_file() and target.stat().st_size > 0
+            if not cache_hit:
+                # 通信中に「最初から」でキャッシュが消されても、古いHTTP応答が
+                # 後から通常キャッシュへ復活しないよう、まず隔離して保存する。
+                with tempfile.TemporaryDirectory(prefix="voice-prefetch-", dir=self.cache_dir) as directory:
+                    temporary_client = VoicevoxClient(
+                        base_url=self.base_url, speaker_id=task.speaker_id,
+                        cache_dir=Path(directory), performance=task.performance,
+                        performance_trace=task.trace,
+                        voice_role=f"{task.prefetch_kind}_prefetch", chunk_index=1,
+                    )
+                    source = temporary_client.create_or_get_audio(task.text, cache_key=task.cache_key)
+                    with self._prefetch_lock:
+                        if task is self._first_chunk_prefetch and task.status != "cancelled":
+                            # 同一ファイルシステム内の置換なので、途中のWAVは見えない。
+                            source.replace(target)
+            with self._prefetch_lock:
+                if task.status != "cancelled":
+                    task.status = "ready"
+        except Exception as exc:
+            # 先読みは任意の最適化。失敗しても画面へエラーを出さず、表示時の
+            # 通常準備で再試行する。ここで音声パイプライン全体を停止しない。
+            error_type = type(exc).__name__
+            with self._prefetch_lock:
+                if task.status != "cancelled":
+                    task.status = "error"
+        finally:
+            task.performance.event(
+                task.trace, "voice_prefetch_finished", started_at=started_at,
+                prefetch_id=task.prefetch_id, status=task.status,
+                cache_hit=cache_hit, error_type=error_type,
+                prefetch_kind=task.prefetch_kind,
+            )
+            task.done.set()
 
     def prefetch(self, text: str, *, cache_key: str, speaker_id: int) -> None:
         """
@@ -533,19 +751,29 @@ class VoicePipeline:
                 # 再生終了とスライダー操作が重なっても、次回再生用の保持値は残す。
                 pass
 
-    def stop(self) -> None:
+    def stop(self, *, preserve_prefetch: bool = False) -> None:
         """
         現在要求を無効化し、待機キューと再生を止める。
 
         実行中のHTTP通信そのものは強制終了できないが、request_idを進めることで、
         完成後の古いWAVが再生キューへ入るのを防ぐ。生成済みキャッシュは残す。
+        preserve_prefetchは次場面の表示準備へ移る場合だけTrueにする。
+        音声停止・最初から・終了では既定のFalseで先読みも取り消す。
         """
         # 世代を1つ進めるだけで、ワーカーが持つ古いジョブを無効と判定できる。
         with self._request_lock:
             self._request_id += 1
 
         # まだ処理されていない古いジョブを両キューから取り除く。
-        self._drain_queue(self._generation_queue)
+        with self._prefetch_lock:
+            if not preserve_prefetch:
+                self._cancel_first_chunk_prefetch_locked()
+            self._drain_queue(self._generation_queue)
+            task = self._first_chunk_prefetch
+            if task is not None and not task.started and not task.done.is_set():
+                # 次場面へ進む通常停止では、まだ未着手の先読みだけを戻す。
+                # 実行中ならワーカーが所有しているので二重にキューへ入れない。
+                self._generation_queue.put(task)
         self._drain_queue(self._playback_queue)
 
         with self._mixer_lock:
@@ -612,14 +840,25 @@ class VoicePipeline:
                 break
 
             try:
+                if isinstance(job, FirstChunkPrefetch):
+                    self._run_first_chunk_prefetch(job)
+                    continue
                 # 場面切り替え前の古いジョブは、生成せず破棄する。
                 if not self._is_current(job.request_id):
                     continue
 
+                job.performance.event(
+                    job.trace, "voice_generation_started", request_id=job.request_id,
+                    chunk_index=job.index, characters=len(job.text),
+                    queue_wait_ms=(time.perf_counter() - job.queued_at) * 1000,
+                )
                 client = VoicevoxClient(
                     base_url=self.base_url,
                     speaker_id=job.speaker_id,
                     cache_dir=self.cache_dir,
+                    performance=job.performance,
+                    performance_trace=job.trace,
+                    voice_role="playback_generation", chunk_index=job.index,
                 )
                 wav_path = client.create_or_get_audio(
                     job.text,

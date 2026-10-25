@@ -21,9 +21,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import threading
+from time import perf_counter
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
+
+from performance_monitor import (
+    DISABLED_MONITOR, PerformanceMonitor, PerformanceTrace, ollama_statistics,
+)
 
 
 class LLMClientError(RuntimeError):
@@ -77,15 +83,26 @@ class OllamaClient:
     def __init__(
         self,
         *,
-        base_url: str = "http://localhost:11434",
+        base_url: str = "http://127.0.0.1:11434",
         model: str = "gemma3:4b",
         timeout: int = 120,
+        performance: PerformanceMonitor | None = None,
     ) -> None:
         """接続先、使用モデル、生成待ち時間を保持する。"""
         # 末尾の「/」を除き、後続の「/api/...」連結で二重スラッシュを防ぐ。
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self.performance = performance or DISABLED_MONITOR
+        self.performance_trace: PerformanceTrace | None = None
+        # 計測にはホスト・ポートだけを残す。URLのユーザー情報やパスは保存しない。
+        # 不正URLの扱いは従来どおりHTTP処理へ任せ、診断処理で起動を止めない。
+        self._connection_metadata: dict[str, Any] = {}
+        try:
+            endpoint = urlsplit(self.base_url)
+            self._connection_metadata = {"server_host": endpoint.hostname, "server_port": endpoint.port}
+        except ValueError:
+            pass
 
         # Tkinter側のキャンセル操作と生成ワーカーは別スレッドで動くため、
         # Eventで中止要求を共有し、Lockで通信中Responseへの参照を保護する。
@@ -158,6 +175,37 @@ class OllamaClient:
         user_prompt: str,
         think: bool = False,
         temperature: float = 0.7,
+        purpose: str = "unspecified",
+        scene_number: int | None = None,
+        attempt: int = 1,
+    ) -> dict[str, Any]:
+        """従来の生成を計測する薄い入口。purpose等はAPIへ送信しない。
+
+        Thinking・JSON・コンテキスト長などの生成条件は従来と同一に保つ。
+        応答に統計がないモデルでも、HTTP所要時間と文字数だけで利用できる。
+        """
+        with self.performance.measure(
+            self.performance_trace, "llm_request", purpose=purpose,
+            scene_number=scene_number, attempt=attempt,
+            system_characters=len(system_prompt), user_characters=len(user_prompt),
+            think_requested=think, temperature=temperature, stream=False,
+            output_format="json", timeout_seconds=self.timeout,
+            num_ctx_requested=None, num_predict_requested=None, phase="preflight",
+            **self._connection_metadata,
+        ) as measurement:
+            return self._generate_json_impl(
+                system_prompt=system_prompt, user_prompt=user_prompt,
+                think=think, temperature=temperature, measurement=measurement,
+            )
+
+    def _generate_json_impl(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        think: bool = False,
+        temperature: float = 0.7,
+        measurement: dict[str, Any],
     ) -> dict[str, Any]:
         """
         チャットAPIへ問い合わせ、AIが返したJSONオブジェクトを返す。
@@ -198,6 +246,8 @@ class OllamaClient:
             # APIへは従来どおり完成JSONを1件だけ要求する。一方requests側は
             # stream=Trueとして本文の受信前にResponseを保持し、画面の
             # キャンセル操作から接続を閉じられるようにする。
+            measurement["phase"] = "http"
+            http_started_at = perf_counter()
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
@@ -205,6 +255,8 @@ class OllamaClient:
                 stream=True,
             )
 
+            measurement["headers_wait_ms"] = (perf_counter() - http_started_at) * 1000
+            measurement["http_status"] = response.status_code
             with self._response_lock:
                 if self._cancel_event.is_set():
                     response.close()
@@ -214,8 +266,26 @@ class OllamaClient:
                 self._active_response = response
 
             response.raise_for_status()
-            # 1回目のJSON解析: Ollama APIレスポンス全体。
-            body = response.json()
+            # .json()も内部で.contentを読む。先に受信を完了させることで、
+            # 本文の待機と外側JSONの解析を分離する（APIのstream設定は変更しない）。
+            response.content
+            measurement["http_ms"] = (perf_counter() - http_started_at) * 1000
+            measurement["phase"] = "outer_json"
+            parse_started_at = perf_counter()
+            try:
+                body = response.json()
+            finally:
+                measurement["outer_json_ms"] = (perf_counter() - parse_started_at) * 1000
+            # 任意の統計項目の欠落・異常は、正常なゲームデータを拒否する理由にしない。
+            try:
+                measurement.update(ollama_statistics(body))
+                api_total_ms = measurement.get("total_duration_ms")
+                if isinstance(api_total_ms, (int, float)):
+                    # HTTPの時間範囲とOllama内部の時間範囲の差。接続時間そのものとは
+                    # 断定しない。接続先比較の前後で同じ方法で確認できるように残す。
+                    measurement["http_minus_ollama_ms"] = measurement["http_ms"] - api_total_ms
+            except Exception:
+                measurement["statistics_unavailable"] = True
         except LLMGenerationCancelled:
             raise
         except requests.exceptions.ConnectionError as exc:
@@ -259,10 +329,13 @@ class OllamaClient:
             raise LLMGenerationCancelled("物語の生成がキャンセルされました。")
 
         # 2回目のJSON解析対象となる、AIの発言本文だけを取り出す。
+        measurement["phase"] = "content"
         content = body.get("message", {}).get("content", "")
         if not content:
             raise LLMClientError("Ollamaから空の返答が返りました。")
 
+        measurement["phase"] = "content_json"
+        parse_started_at = perf_counter()
         try:
             # format=jsonを指定しても、content自体は文字列なので明示的に解析する。
             parsed = json.loads(content)
@@ -270,8 +343,11 @@ class OllamaClient:
             raise LLMClientError(
                 "AIの返答が正しいJSON形式ではありませんでした。"
             ) from exc
+        finally:
+            measurement["content_json_ms"] = (perf_counter() - parse_started_at) * 1000
 
         # ゲーム側はキー名で値を取得するため、配列などは受け付けない。
         if not isinstance(parsed, dict):
             raise LLMClientError("AIの返答JSONがオブジェクト形式ではありません。")
+        measurement["phase"] = "complete"
         return parsed

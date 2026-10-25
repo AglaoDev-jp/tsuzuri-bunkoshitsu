@@ -41,6 +41,9 @@ open-source projects that made this application possible.
 from __future__ import annotations
 
 import json
+import platform
+import queue
+from time import perf_counter
 import shutil
 import sys
 import threading
@@ -68,6 +71,8 @@ from llm_client import (
     OllamaModelInfo,
 )
 from voicevox_client import VoicePipeline, VoicevoxClient, VoicevoxError
+from performance_monitor import APP_VERSION, PerformanceMonitor, PerformanceTrace
+from voice_diagnostics import format_report, run_diagnostic
 
 
 # 実行時のカレントディレクトリではなく、このPythonファイルの場所を基準にする。
@@ -220,6 +225,29 @@ class AdventureApp:
     def __init__(self, root: tk.Tk) -> None:
         """ウィンドウ状態、進行状態、音声処理、画面部品を初期化する。"""
         self.root = root
+        self._closing = False
+        self.voice_diagnostic_active = False
+        self._voice_diagnostic_cancel = threading.Event()
+        self._voice_diagnostic_poll_id: str | None = None
+        # 計測だけを追加する。生成条件・表示順・音声ON/OFFの初期値は変更しない。
+        self.performance = PerformanceMonitor(
+            LOG_DIR, enabled=bool(SETTINGS.get("performance", {}).get("enabled", True)),
+        )
+        self.performance_trace: PerformanceTrace | None = None
+        session = self.performance.start("session")
+        self.performance.event(
+            session, "session_info", app_version=APP_VERSION,
+            python_version=platform.python_version(), operating_system=platform.system(),
+            # Ollamaへの診断API呼び出しは増やさない。実効num_ctx/バージョンは未取得。
+            api_stream=False, num_ctx_requested=None, num_predict_requested=None,
+            summary_in_scene=bool(SETTINGS["game"].get("summary_in_scene", True)),
+            prefetch_next_scene_first_chunk=bool(
+                SETTINGS["voicevox"].get("prefetch_next_scene_first_chunk", True)
+            ),
+            prefetch_ending_first_chunk=bool(
+                SETTINGS["voicevox"].get("prefetch_ending_first_chunk", True)
+            ),
+        )
         self.root.title("綴り文庫室")
         # 初期表示でも画像・本文・選択肢を同時に見渡せる縦幅を確保する。
         self.root.geometry("850x890")
@@ -268,6 +296,8 @@ class AdventureApp:
         # presentation_idが古い処理を見分け、最初からやり直したあとに
         # 前の場面が突然表示されることを防ぐ。
         self.presentation_id = 0
+        # 表示世代、次に読む文章、先読みの種類をひと組で保持する。
+        self.pending_voice_prefetch: tuple[int, list[tuple[str, str]], str] | None = None
         self.narrative_typing_done = False
         self.narrative_voice_done = True
         self.narrative_complete_callback: Callable[[], None] | None = None
@@ -459,6 +489,10 @@ class AdventureApp:
             width=7,
         )
         self.speaker_entry.grid(row=1, column=3, pady=(7, 0), sticky="w")
+        self.voice_diagnostic_button = tk.Button(
+            settings_frame, text="音声計測", command=self.start_voice_diagnostic,
+        )
+        self.voice_diagnostic_button.grid(row=1, column=4, padx=(5, 0), pady=(7, 0))
 
         # BGM・効果音・VOICEVOXは別々の再生先を使っているため、音量も個別に
         # 調整できる。画面では分かりやすい0～100、内部では0.0～1.0を使う。
@@ -672,10 +706,7 @@ class AdventureApp:
             pady=5,
         )
         self.free_story_frame.grid_columnconfigure(0, weight=1)
-        # 説明文の直下に置く入力欄へ、画面内の余った高さをすべて渡す。
-        # 通常ウィンドウでも複数行を見渡せる高さを確保し、画面を広げた場合は
-        # その増加分も入力欄が自然に受け取るようにする。
-        self.free_story_frame.grid_rowconfigure(2, weight=1)
+        self.free_story_frame.grid_rowconfigure(3, weight=1)
 
         tk.Label(
             self.free_story_frame,
@@ -690,7 +721,18 @@ class AdventureApp:
             font=("", 11),
             anchor="w",
             background="#f7f7f7",
-        ).grid(row=1, column=0, sticky="ew", pady=(10, 10))
+        ).grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        tk.Label(
+            self.free_story_frame,
+            text=(
+                "例：雨の夜の古いホテルを舞台にした、"
+                "少し不思議なミステリー"
+            ),
+            font=("", 10),
+            foreground="#555555",
+            anchor="w",
+            background="#f7f7f7",
+        ).grid(row=2, column=0, sticky="ew", pady=(5, 10))
 
         self.free_story_input = scrolledtext.ScrolledText(
             self.free_story_frame,
@@ -700,7 +742,7 @@ class AdventureApp:
             padx=12,
             pady=10,
         )
-        self.free_story_input.grid(row=2, column=0, sticky="nsew")
+        self.free_story_input.grid(row=3, column=0, sticky="nsew")
         self.free_story_input.bind(
             "<KeyRelease>",
             self._on_free_story_input_changed,
@@ -726,7 +768,7 @@ class AdventureApp:
             self.free_story_frame,
             background="#f7f7f7",
         )
-        free_story_footer.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        free_story_footer.grid(row=4, column=0, sticky="ew", pady=(8, 0))
         free_story_footer.grid_columnconfigure(0, weight=1)
         tk.Label(
             free_story_footer,
@@ -748,7 +790,7 @@ class AdventureApp:
             font=("", 11, "bold"),
             anchor="w",
             background="#f7f7f7",
-        ).grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        ).grid(row=5, column=0, sticky="ew", pady=(8, 0))
 
         # 起動時は従来どおり本文欄を表示する。grid_remove()なら配置情報が
         # 保持されるため、選択時に引数なしのgrid()で同じ位置へ戻せる。
@@ -847,10 +889,6 @@ class AdventureApp:
     def _show_free_story_input(self) -> None:
         """本文欄を隠し、保持中の自由入力欄を同じ表示領域へ戻す。"""
         self.text_area.grid_remove()
-        # 自由入力中は選択肢をまだ使わないため、空の固定枠を一時的に隠す。
-        # その150px分も可変行へ戻り、通常サイズのウィンドウでも入力欄が
-        # 一行程度まで押しつぶされず、十分な編集領域を確保できる。
-        self.choice_frame.grid_remove()
         self.free_story_frame.grid()
         self._update_free_story_count()
         self.free_story_input.focus_set()
@@ -859,9 +897,6 @@ class AdventureApp:
         """自由入力欄を隠し、既存の読み取り専用本文欄を復元する。"""
         self.free_story_frame.grid_remove()
         self.text_area.grid()
-        # 通常ジャンルへ戻した場合やゲーム開始後は、従来どおり選択肢枠を
-        # 復元する。grid()だけなら最初に指定した配置設定がそのまま使われる。
-        self.choice_frame.grid()
 
     def _on_free_story_input_changed(self, _event: tk.Event | None = None) -> None:
         """入力中の文字数を表示し、修正後は古い案内エラーを消す。"""
@@ -1208,6 +1243,12 @@ class AdventureApp:
 
     def _begin_generation(self, client: OllamaClient) -> int:
         """新しいLLM生成を現在の依頼として登録し、キャンセル操作を有効にする。"""
+        self.performance_trace = self.performance.start(
+            "game_start" if self.engine is not None and self.engine.scene_number == 0 else "choice",
+            model=client.model, voice_enabled=bool(self.voice_enabled_var.get()),
+            summary_in_scene=self.engine.summary_in_scene if self.engine is not None else None,
+        )
+        client.performance_trace = self.performance_trace
         self.generation_id += 1
         self.generation_active = True
         self.active_llm_client = client
@@ -1227,6 +1268,7 @@ class AdventureApp:
         ):
             return False
 
+        self.performance.event(self.performance_trace, "gui_result_received")
         self.generation_active = False
         self.active_llm_client = None
         self.cancel_generation_button.config(state=tk.DISABLED)
@@ -1241,6 +1283,7 @@ class AdventureApp:
         """有効な第1場面だけを受け取り、通常の場面表示へ進める。"""
         if not self._complete_generation(generation_id, engine):
             return
+
         # 開始設定と第1場面の両方が完成した時点で、復帰用の原文は不要になる。
         self.active_free_story_request = None
         self._show_story_text_area()
@@ -1267,6 +1310,7 @@ class AdventureApp:
         if not self._complete_generation(generation_id, engine):
             return
 
+        self.performance.event(self.performance_trace, "generation_error")
         # 通常モードは従来のエラー表示をそのまま使う。自由入力からの開始だけは
         # 原文を保持した入力画面へ戻し、そのまま修正・再試行できるようにする。
         if self.active_free_story_request is None:
@@ -1317,6 +1361,7 @@ class AdventureApp:
         if not self.generation_active:
             return
 
+        self.performance.event(self.performance_trace, "generation_cancel_requested")
         was_free_story_start = self.active_free_story_request is not None
         client = self.active_llm_client
         self.generation_id += 1
@@ -1466,6 +1511,7 @@ class AdventureApp:
             base_url=SETTINGS["ollama"]["base_url"],
             model=model,
             timeout=SETTINGS["ollama"]["timeout_seconds"],
+            performance=self.performance,
         )
         engine = GameEngine(
             llm_client=client,
@@ -1477,6 +1523,7 @@ class AdventureApp:
                 "summary_max_characters",
                 100,
             ),
+            summary_in_scene=SETTINGS["game"].get("summary_in_scene", True),
             logger=self._log_internal,
         )
         self.engine = engine
@@ -1507,9 +1554,12 @@ class AdventureApp:
     ) -> None:
         """必要なら自由文を整理し、第1場面を生成してメインスレッドへ戻す。"""
         try:
-            if free_story_request is not None:
-                engine.prepare_free_story(free_story_request)
-            scene = engine.start()
+            with self.performance.measure(
+                engine.llm_client.performance_trace, "generation_worker",
+            ):
+                if free_story_request is not None:
+                    engine.prepare_free_story(free_story_request)
+                scene = engine.start()
             self.root.after(
                 0,
                 lambda: self._finish_start_generation(
@@ -1583,7 +1633,10 @@ class AdventureApp:
     ) -> None:
         """GameEngineの選択処理を実行し、status別表示へ引き渡す。"""
         try:
-            result = engine.choose(choice)
+            with self.performance.measure(
+                engine.llm_client.performance_trace, "generation_worker",
+            ):
+                result = engine.choose(choice)
             self.root.after(
                 0,
                 lambda: self._finish_choice_generation(
@@ -1615,6 +1668,7 @@ class AdventureApp:
         分担になっている。
         """
         status = result.get("status")
+        self.performance.event(self.performance_trace, "result_received", result_status=status)
 
         # 現在のGUIでは送信前にも検証するが、エンジン側の防御結果にも対応。
         if status == "invalid":
@@ -1656,6 +1710,7 @@ class AdventureApp:
                     on_narrative_complete=lambda scene=scene: (
                         self._show_next_scene_button(scene)
                     ),
+                    next_voice_scene=scene,
                 ),
                 result_image_key="correct",
             )
@@ -1824,16 +1879,10 @@ class AdventureApp:
             f"{scene.scene_text}\n"
         )
 
-        # scene_voice_textはVOICEVOXが自然に読み分けられる句読点を補う。
-        scene_voice_text = (
-            f"{scene.title}。{scene.scene_text}。"
-            f"選択肢a、{scene.choice_a}。"
-            f"選択肢b、{scene.choice_b}。"
-        )
-
         self._prepare_narrative(
             display_text=display_text,
-            voice_parts=[(scene_voice_text, self.current_voice_cache_key)],
+            voice_parts=self._scene_voice_parts(scene),
+            preserve_voice_prefetch=True,
             # 音声先行生成が終わり、本文表示が始まる瞬間にだけ画像を切り替える。
             background_tag=scene.background_tag,
             # 画像と同じタイミングでSceneの曲へ切り替える。同じタグなら
@@ -1850,6 +1899,16 @@ class AdventureApp:
             ),
         )
 
+    @staticmethod
+    def _scene_voice_parts(scene: Scene) -> list[tuple[str, str]]:
+        """先読みと本表示で、文章・句読点・キャッシュキーを完全にそろえる。"""
+        text = (
+            f"{scene.title}。{scene.scene_text}。"
+            f"選択肢a、{scene.choice_a}。"
+            f"選択肢b、{scene.choice_b}。"
+        )
+        return [(text, f"scene_{scene.number}")]
+
     def _prepare_narrative(
         self,
         *,
@@ -1862,6 +1921,10 @@ class AdventureApp:
         background_tag: str | None = None,
         result_image_key: str | None = None,
         bgm_tag: str | None = None,
+        next_voice_scene: Scene | None = None,
+        preserve_voice_prefetch: bool = False,
+        next_voice_parts: list[tuple[str, str]] | None = None,
+        voice_prefetch_kind: str = "next_scene",
     ) -> None:
         """
         最初の音声チャンクを準備してから、本文表示と音声再生を開始する。
@@ -1872,6 +1935,20 @@ class AdventureApp:
         # _begin_narrative側で世代不一致として破棄できる。
         self.presentation_id += 1
         presentation_id = self.presentation_id
+        # 正解文とエンディングにだけ、次区間の先頭音声を予約する権利を持たせる。
+        # 表示世代と組にしておけば、遅れて届いた前回の準備完了から予約されない。
+        if next_voice_parts is not None:
+            target_parts = list(next_voice_parts)
+        elif next_voice_scene is not None:
+            target_parts = self._scene_voice_parts(next_voice_scene)
+        else:
+            target_parts = []
+        self.pending_voice_prefetch = (presentation_id, target_parts, voice_prefetch_kind)
+        self.performance.event(
+            self.performance_trace, "narrative_preparing",
+            presentation_id=presentation_id, display_characters=len(display_text),
+            voice_enabled=bool(self.voice_enabled_var.get() and voice_parts),
+        )
         self.voice_cancelled_presentation_id = None
         self.narrative_typing_done = False
         self.narrative_voice_done = not bool(voice_parts)
@@ -1880,7 +1957,9 @@ class AdventureApp:
         self._cancel_typing()
         self._disable_choice()
         # 前の場面の再生・待機ジョブを止める。生成済みキャッシュは残る。
-        self.voice_pipeline.stop()
+        self.voice_pipeline.stop(
+            preserve_prefetch=preserve_voice_prefetch and bool(self.voice_enabled_var.get()),
+        )
 
         # 読み上げOFF、または画面表示だけの項目なら、音声準備スレッドを作らない。
         if not self.voice_enabled_var.get() or not voice_parts:
@@ -1934,6 +2013,7 @@ class AdventureApp:
                 result_image_key,
                 bgm_tag,
                 presentation_id,
+                self.performance_trace,
             ),
             daemon=True,
             name="first-voice-preparer",
@@ -1952,6 +2032,7 @@ class AdventureApp:
         result_image_key: str | None,
         bgm_tag: str | None,
         presentation_id: int,
+        performance_trace: PerformanceTrace | None,
     ) -> None:
         """
         最初の音声チャンクだけを、画面を止めずに先行生成する。
@@ -1961,14 +2042,26 @@ class AdventureApp:
         再生と並行して生成する。
         """
         voice_error: str | None = None
+        voice_status = "error"
+        prepared_started_at = perf_counter()
         try:
             self.voice_pipeline.prepare_first_chunk(
                 voice_parts,
                 speaker_id=speaker_id,
+                performance=self.performance,
+                performance_trace=performance_trace,
             )
+            voice_status = "ok"
         except VoicevoxError as exc:
             # VOICEVOXが使えなくても、物語の本文は続けて表示する。
             voice_error = str(exc)
+        finally:
+            self.performance.event(
+                performance_trace, "first_voice_prepared", started_at=prepared_started_at,
+                status=voice_status,
+                presentation_id=presentation_id,
+                stale=(presentation_id != self.presentation_id),
+            )
 
         # voice_errorも値としてメインスレッドへ渡し、GUI操作は_begin_narrativeに任せる。
         self.root.after(
@@ -2019,15 +2112,18 @@ class AdventureApp:
         # BGMも本文が実際に始まる瞬間にだけ切り替える。VOICEVOXの先行生成中は
         # 直前の曲を維持するため、待ち時間中の不自然な無音や先走りを避けられる。
         if bgm_tag is not None:
-            self.bgm_manager.play(bgm_tag)
+            with self.performance.measure(self.performance_trace, "bgm_prepare"):
+                self.bgm_manager.play(bgm_tag)
         # background_tag=Noneの正解結果・各エンディングでは、直前の画像を維持する。
         # Sceneを表示するときだけタグが渡り、本文タイピング開始直前に切り替わる。
         if background_tag is not None:
-            self._show_background(background_tag)
+            with self.performance.measure(self.performance_trace, "background_prepare"):
+                self._show_background(background_tag)
         # AIコメント以降の固定画像も、VOICEVOX先行生成の前ではなく、対応する
         # セクションの本文表示が実際に始まるこの瞬間に切り替える。
         if result_image_key is not None:
-            self._show_result_image(result_image_key)
+            with self.performance.measure(self.performance_trace, "result_image_prepare"):
+                self._show_result_image(result_image_key)
         if replace_display:
             self._clear_text_area()
 
@@ -2057,6 +2153,10 @@ class AdventureApp:
                 on_typing_complete()
             self._mark_narrative_typing_done(presentation_id)
 
+        self.performance.event(
+            self.performance_trace, "display_started", presentation_id=presentation_id,
+            display_characters=len(display_text), voice_active=has_voice,
+        )
         self._start_typing(
             display_text,
             on_complete=typing_finished,
@@ -2066,6 +2166,8 @@ class AdventureApp:
             self.voice_pipeline.speak_sequence(
                 voice_parts,
                 speaker_id=speaker_id,
+                performance=self.performance,
+                performance_trace=self.performance_trace,
                 # 音声ワーカーからTkinterを直接触らず、メインスレッドへ戻す。
                 on_complete=lambda: self.root.after(
                     0,
@@ -2074,6 +2176,19 @@ class AdventureApp:
                     ),
                 ),
             )
+            pending = self.pending_voice_prefetch
+            if (
+                pending is not None and pending[0] == presentation_id
+                and pending[1] and self.voice_enabled_var.get()
+                and SETTINGS.get("voicevox", {}).get(f"prefetch_{pending[2]}_first_chunk", True)
+            ):
+                # 現在文をすべてキューへ入れた後で、次に読む区間の先頭だけ予約。
+                # この処理は再生を始めず、本文・画像・BGMの切替時刻も変更しない。
+                self.voice_pipeline.prefetch_first_chunk(
+                    pending[1], speaker_id=speaker_id, prefetch_kind=pending[2],
+                    performance=self.performance, performance_trace=self.performance_trace,
+                )
+        self.pending_voice_prefetch = None
 
     def _set_choice_buttons(self, scene: Scene) -> None:
         """本文完了後、現在場面の選択肢を設定して画面へ表示する。"""
@@ -2140,6 +2255,10 @@ class AdventureApp:
         ):
             return
 
+        self.performance_trace = self.performance.start(
+            "continue", model=self.engine.llm_client.model if self.engine is not None else "",
+            voice_enabled=bool(self.voice_enabled_var.get()),
+        )
         action = self.pending_continue_action
         self.pending_continue_action = None
         # 連打による二重遷移を防ぐため、予約を作る前にボタンを無効化して隠す。
@@ -2204,6 +2323,9 @@ class AdventureApp:
         """現在表示の文字演出が完了したことを記録する。"""
         if presentation_id != self.presentation_id:
             return
+        self.performance.event(
+            self.performance_trace, "typing_completed", presentation_id=presentation_id,
+        )
         self.narrative_typing_done = True
         self._try_complete_narrative(presentation_id)
 
@@ -2211,6 +2333,9 @@ class AdventureApp:
         """現在表示の読み上げが完了または停止したことを記録する。"""
         if presentation_id != self.presentation_id:
             return
+        self.performance.event(
+            self.performance_trace, "voice_completed_or_stopped", presentation_id=presentation_id,
+        )
         self.narrative_voice_done = True
         self._try_complete_narrative(presentation_id)
 
@@ -2223,6 +2348,9 @@ class AdventureApp:
         ):
             return
 
+        self.performance.event(
+            self.performance_trace, "narrative_completed", presentation_id=presentation_id,
+        )
         callback = self.narrative_complete_callback
         # コールバック内で次の表示を始めても二重実行されないよう、先に参照を外す。
         self.narrative_complete_callback = None
@@ -2254,6 +2382,10 @@ class AdventureApp:
             result_image_key,
             bgm_tag,
         ) = stages[index]
+        # 音声のないプレイ記録は飛ばして、次に実際に読む区間を1つだけ探す。
+        # AIコメント中に最後の挨拶を準備し、プレイ記録の表示中も保持できる。
+        # 表示順や続行ボタンは変更せず、ここでは音声の材料だけを先取りする。
+        next_voice_parts = next((parts for _, parts, *_ in stages[index + 1:] if parts), [])
         self._prepare_narrative(
             display_text=display_text,
             voice_parts=voice_parts,
@@ -2262,6 +2394,11 @@ class AdventureApp:
             background_tag=background_tag,
             result_image_key=result_image_key,
             bgm_tag=bgm_tag,
+            next_voice_parts=next_voice_parts,
+            voice_prefetch_kind="ending",
+            preserve_voice_prefetch=(
+                index > 0 and bool(SETTINGS["voicevox"].get("prefetch_ending_first_chunk", True))
+            ),
             on_narrative_complete=lambda: self._complete_ending_stage(
                 stages,
                 index,
@@ -2353,8 +2490,10 @@ class AdventureApp:
         # LLM生成中は以前の情景を維持し、結果が確定したこの時点でだけ切り替える。
         # 効果音より先に設定することで、目と耳で同時に正解・結末を受け取れる。
         if result_image_key is not None:
-            self._show_result_image(result_image_key)
-        self.voice_pipeline.play_sound_effect(wav_path)
+            with self.performance.measure(self.performance_trace, "result_image_prepare"):
+                self._show_result_image(result_image_key)
+        with self.performance.measure(self.performance_trace, "sfx_prepare"):
+            self.voice_pipeline.play_sound_effect(wav_path)
         presentation_id = self.presentation_id
 
         def run_if_current() -> None:
@@ -2385,6 +2524,7 @@ class AdventureApp:
         self._cancel_scheduled_transition()
         self._cancel_scheduled_sfx_narrative()
         self.presentation_id += 1
+        self.pending_voice_prefetch = None
         self.narrative_typing_done = False
         self.narrative_voice_done = True
         self.narrative_complete_callback = None
@@ -2394,6 +2534,7 @@ class AdventureApp:
         """現在の読み上げを止め、章間処理では音声完了として扱う。"""
         presentation_id = self.presentation_id
         self.voice_cancelled_presentation_id = presentation_id
+        self.pending_voice_prefetch = None
         self.voice_pipeline.stop()
         self._mark_narrative_voice_done(presentation_id)
 
@@ -2682,6 +2823,10 @@ class AdventureApp:
         )
         self._write(retry_message)
         self._append_backlog(retry_message)
+        self.performance_trace = self.performance.start(
+            "retry", model=self.engine.llm_client.model,
+            voice_enabled=bool(self.voice_enabled_var.get()),
+        )
         self._set_busy(True)
         self._start_waiting_animation()
         self._show_scene(scene)
@@ -2730,6 +2875,71 @@ class AdventureApp:
             parts,
             speaker_id=speaker_id,
         )
+
+    def start_voice_diagnostic(self) -> None:
+        """開始前かクリア後にだけ、再生なしの固定文計測を別スレッドで実行する。"""
+        if self.voice_diagnostic_active:
+            self._voice_diagnostic_cancel.set()
+            self.voice_diagnostic_button.config(text="中止待ち…", state=tk.DISABLED)
+            return
+        if (self.busy or self.typing_active or not self.narrative_voice_done
+                or (self.engine is not None and (not self.engine.finished or not self.game_clear_complete))):
+            # 区間間にも先読みが動くため、固定文診断は終了演出をすべて終えてから。
+            messagebox.showinfo("音声計測", "ゲーム開始前、またはエンディングの読み上げ終了後に計測してください。")
+            return
+        try:
+            speaker_id = int(self.speaker_var.get())
+            if speaker_id < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("音声計測", "話者IDは0以上の整数で入力してください。")
+            return
+        self.voice_diagnostic_active = True
+        self._voice_diagnostic_cancel.clear()
+        self._set_busy(True)
+        self.voice_diagnostic_button.config(text="計測中止", state=tk.NORMAL)
+        # 明示的に開始した診断だけは、通常プレイの計測OFFでも独立ログへ残す。
+        # 物語のperformance_traceは変更せず、診断とゲームの時刻を混ぜない。
+        monitor = PerformanceMonitor(LOG_DIR, enabled=True)
+        trace = monitor.start("voice_diagnostic", source="game_idle")
+        results: queue.Queue = queue.Queue()
+
+        def worker() -> None:
+            try:
+                report = run_diagnostic(
+                    base_url=SETTINGS["voicevox"]["base_url"], speaker_id=speaker_id,
+                    source="game_idle", performance=monitor, trace=trace,
+                    cancel_event=self._voice_diagnostic_cancel,
+                )
+                results.put((report, None))
+            except Exception as exc:
+                # 予期しない診断の失敗でも、ゲームの操作を復帰させる。
+                results.put((None, type(exc).__name__))
+
+        threading.Thread(target=worker, daemon=True, name="voice-diagnostic").start()
+        self._poll_voice_diagnostic(results, monitor)
+
+    def _poll_voice_diagnostic(self, results: queue.Queue, monitor: PerformanceMonitor) -> None:
+        """Tk操作をメインスレッドへ限定し、終了後の遅い完了通知を捨てる。"""
+        if self._closing:
+            return
+        try:
+            report, error = results.get_nowait()
+        except queue.Empty:
+            self._voice_diagnostic_poll_id = self.root.after(
+                100, lambda: self._poll_voice_diagnostic(results, monitor),
+            )
+            return
+        self._voice_diagnostic_poll_id = None
+        self.voice_diagnostic_active = False
+        self.voice_diagnostic_button.config(text="音声計測", state=tk.NORMAL)
+        self._set_busy(False)
+        if error:
+            messagebox.showerror("音声計測", f"計測を完了できませんでした: {error}")
+            return
+        log_note = (f"\n\n計測ログ: {monitor.path}" if not monitor.write_failed
+                    else "\n\n計測ログを保存できませんでした。")
+        messagebox.showinfo("音声計測結果", format_report(report) + log_note)
 
     def _on_voice_error(self, message: str) -> None:
         """
@@ -2839,6 +3049,7 @@ class AdventureApp:
             state=tk.NORMAL,
             background=CHOICE_BUTTON_BG,
         )
+        self.performance.event(self.performance_trace, "choices_enabled")
 
     def _disable_choice(self) -> None:
         """A・Bボタンを同時に無効化し、二重選択を防ぐ。"""
@@ -3079,7 +3290,13 @@ class AdventureApp:
         ``destroy()`` より先にshutdownすることで、破棄済みGUIへワーカーが
         コールバックし続ける状態を避ける。
         """
+        self._closing = True
+        self._voice_diagnostic_cancel.set()
+        if self._voice_diagnostic_poll_id is not None:
+            self.root.after_cancel(self._voice_diagnostic_poll_id)
+            self._voice_diagnostic_poll_id = None
         # 生成中に閉じた場合も、Ollamaとの接続と古いワーカー結果を無効化する。
+        self.performance.event(self.performance_trace, "application_closing")
         active_client = self.active_llm_client
         self.generation_id += 1
         self.generation_active = False

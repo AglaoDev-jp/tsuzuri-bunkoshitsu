@@ -77,6 +77,10 @@ class Scene:
     # 将来の拡張や旧データとの互換用。現時点の進行処理では参照していない。
     final_summary: str = ""
 
+    # 正解時にだけ採用する、生成済みのローリング要約。欠落時は従来方式へ戻す。
+    # バックログ・表示・読み上げへは渡さず、不正解時には物語の記憶へ反映しない。
+    summary_after_correct: str = ""
+
 
 class GameEngine:
     """
@@ -101,6 +105,7 @@ class GameEngine:
         total_scenes: int = 5,
         max_retries: int = 3,
         summary_max_characters: int = 100,
+        summary_in_scene: bool = True,
         logger: Callable[[str], None] | None = None,
     ) -> None:
         """ゲーム設定と依存オブジェクトを受け取り、未開始状態を作る。"""
@@ -113,6 +118,7 @@ class GameEngine:
         self.max_retries = max_retries
         # 設定ミスで0以下になっても空要約を量産しないよう、最低1文字を保証する。
         self.summary_max_characters = max(1, int(summary_max_characters))
+        self.summary_in_scene = summary_in_scene
         self.logger = logger or (lambda _message: None)
 
         # ゲーム中に更新される進行状態。
@@ -151,6 +157,9 @@ class GameEngine:
             try:
                 data = self.llm_client.generate_json(
                     system_prompt=FREE_STORY_SETUP_SYSTEM_PROMPT,
+                    purpose="free_story_setup",
+                    scene_number=self.scene_number,
+                    attempt=attempt,
                     user_prompt=build_free_story_setup_prompt(
                         user_request=normalized_request,
                         total_scenes=self.total_scenes,
@@ -206,6 +215,11 @@ class GameEngine:
                 raise
             except (LLMClientError, GameDataError) as exc:
                 last_error = exc
+                self.llm_client.performance.event(
+                    self.llm_client.performance_trace, "generation_attempt_failed",
+                    scene_number=self.scene_number, attempt=attempt,
+                    error_type=type(exc).__name__,
+                )
                 self.logger(
                     "自由入力の整理に失敗しました"
                     f"（{attempt}/{self.max_retries}）: {exc}"
@@ -316,12 +330,30 @@ class GameEngine:
         selected_choice: str,
     ) -> str:
         """
-        正解後、別のLLM呼び出しで設定文字数以内のローリング要約を作ってもらう。
+        正解後、同時生成済みの要約を採用する。未対応時は従来の別呼び出しを使う。
 
         この要約は次場面のプロンプトへ渡す「物語の記憶」として使う。場面全文を
         蓄積する方式より入力を小さく保てる一方、重要情報を落とし得るため、
         専用プロンプトで人物・証拠・目的を優先させている。
         """
+        # この関数はchoose()で正解と確認された後にだけ呼ばれる。
+        # 要約を用意した段階ではstory_summaryを書き換えないことが重要。
+        prepared, reason = self._prepared_summary(scene.summary_after_correct)
+        if self.summary_in_scene and prepared:
+            self.llm_client.performance.event(
+                self.llm_client.performance_trace, "summary_applied",
+                scene_number=scene.number, source="prepared", characters=len(prepared),
+            )
+            self.logger(f"場面{scene.number}終了時の要約（同時生成）: {prepared}")
+            return prepared
+
+        # 空・不正型・長すぎる要約だけを理由に、場面全体の再生成はしない。
+        # ONでも使える要約がなければ、以前と同じ温度・プロンプトで要約する。
+        self.llm_client.performance.event(
+            self.llm_client.performance_trace, "summary_fallback",
+            scene_number=scene.number,
+            reason=reason if self.summary_in_scene else "mode_disabled",
+        )
         selected_choice_text = (
             scene.choice_a if selected_choice == "a" else scene.choice_b
         )
@@ -339,6 +371,8 @@ class GameEngine:
         try:
             data = self.llm_client.generate_json(
                 system_prompt=SUMMARY_SYSTEM_PROMPT,
+                purpose="summary",
+                scene_number=self.scene_number,
                 user_prompt=prompt,
                 think=False,
                 # 要約は創造性より事実の安定性を優先するため低めにする。
@@ -355,6 +389,10 @@ class GameEngine:
                 summary = summary[: self.summary_max_characters]
 
             self.logger(f"場面{scene.number}終了時の要約: {summary}")
+            self.llm_client.performance.event(
+                self.llm_client.performance_trace, "summary_applied",
+                scene_number=scene.number, source="separate", characters=len(summary),
+            )
             return summary
         except LLMGenerationCancelled:
             # キャンセルは生成失敗ではないため、簡易要約へ進まず画面層へ伝える。
@@ -363,6 +401,11 @@ class GameEngine:
             # 要約は補助処理なので、失敗だけでゲーム全体を止めない。
             # 前回要約と今回の確定事実から、LLMを使わない簡易要約を作る。
             self.logger(f"要約生成に失敗したため簡易要約を使用します: {exc}")
+            self.llm_client.performance.event(
+                self.llm_client.performance_trace, "summary_applied",
+                scene_number=scene.number, source="local_fallback",
+                error_type=type(exc).__name__,
+            )
             fallback = (
                 f"{self.story_summary} "
                 f"場面{scene.number}で{selected_choice_text}を選び、"
@@ -370,6 +413,21 @@ class GameEngine:
             ).strip()
             # 末尾には最新の出来事があるため、超過時は後ろ側を設定文字数だけ残す。
             return fallback[-self.summary_max_characters :]
+
+    def _prepared_summary(self, value: object) -> tuple[str, str]:
+        """任意項目だけを検査する。None・配列・辞書を文字列へ変換して採用しない。
+
+        長すぎる要約は途中で切ると重要情報を落とす可能性があるため、別要約へ
+        戻す。ここでの検査は形式・長さだけで、内容の忠実性を保証するものではない。
+        """
+        if not isinstance(value, str):
+            return "", "invalid_type"
+        normalized = " ".join(value.split())
+        if not normalized:
+            return "", "missing_or_empty"
+        if len(normalized) > self.summary_max_characters:
+            return "", "over_limit"
+        return normalized, "available"
 
     def retry_current_scene(self) -> Scene:
         """
@@ -437,6 +495,8 @@ class GameEngine:
         try:
             data = self.llm_client.generate_json(
                 system_prompt=ENDING_SYSTEM_PROMPT,
+                purpose="ending",
+                scene_number=self.scene_number,
                 user_prompt=prompt,
                 think=False,
                 # 要約より少し高くし、事実を守りつつ表現には幅を持たせる。
@@ -541,20 +601,42 @@ class GameEngine:
                         total_scenes=self.total_scenes,
                         story_summary=self.story_summary,
                         required_correct_choice=required_correct_choice,
+                        include_summary=self.summary_in_scene,
+                        summary_max_characters=self.summary_max_characters,
                     )
 
                 data = self.llm_client.generate_json(
                     system_prompt=BASE_SYSTEM_PROMPT,
+                    purpose="scene",
+                    scene_number=self.scene_number,
+                    attempt=attempt,
                     user_prompt=prompt,
                     think=False,
                 )
                 # LLMの返答をそのまま信用せず、境界で検証してSceneへ変換する。
-                return self._parse_scene(data, required_correct_choice)
+                with self.llm_client.performance.measure(
+                    self.llm_client.performance_trace, "scene_validation",
+                    scene_number=self.scene_number, attempt=attempt,
+                ):
+                    scene = self._parse_scene(data, required_correct_choice)
+                if self.summary_in_scene and self.scene_number < self.total_scenes:
+                    _, reason = self._prepared_summary(data.get("summary_after_correct", ""))
+                    self.llm_client.performance.event(
+                        self.llm_client.performance_trace, "summary_prepared",
+                        scene_number=self.scene_number,
+                        available=bool(scene.summary_after_correct), reason=reason,
+                    )
+                return scene
             except LLMGenerationCancelled:
                 # 通信・JSON失敗用の再試行とは区別し、キャンセルは直ちに終了する。
                 raise
             except (LLMClientError, GameDataError) as exc:
                 last_error = exc
+                self.llm_client.performance.event(
+                    self.llm_client.performance_trace, "generation_attempt_failed",
+                    scene_number=self.scene_number, attempt=attempt,
+                    error_type=type(exc).__name__,
+                )
                 self.logger(
                     f"場面生成に失敗しました（{attempt}/{self.max_retries}）: {exc}"
                 )
@@ -642,4 +724,9 @@ class GameEngine:
             good_end_title=str(data.get("good_end_title", "")).strip(),
             good_end_text=str(data.get("good_end_text", "")).strip(),
             final_summary=str(data.get("final_summary", "")).strip(),
+            summary_after_correct=(
+                self._prepared_summary(data.get("summary_after_correct", ""))[0]
+                if self.summary_in_scene and self.scene_number < self.total_scenes
+                else ""
+            ),
         )

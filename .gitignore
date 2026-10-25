@@ -1,49 +1,50 @@
-# Python キャッシュ
+# Pythonのバイトコード（ネイティブ拡張の .pyd は一括除外しない）
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
 
-# 型チェック
+# 型チェック・テスト・静的解析のキャッシュ
 .mypy_cache/
-
-# テスト
 .pytest_cache/
-
-# Ruff
 .ruff_cache/
+.cache/
 
-# カバレッジ
+# カバレッジの生成物
 .coverage
+.coverage.*
 htmlcov/
+coverage.xml
 
 # 仮想環境
 venv/
 .venv/
 env/
+ENV/
 .env/
 
-# 一時ファイル・ログ
-*.tmp
-*.log
-.cache/
+# ローカルの環境変数設定（公開用の見本は保持する）
+.env
+.env.*
+!.env.example
+!.env.sample
 
-# プロジェクト固有
+# 実行ログ・計測ログと、VOICEVOXの生成音声
+/src/logs/
+/logs/
+performance_*.jsonl
 voice_cache/
 
-# OS / エディタ関連
+# 一時ファイル
+*.tmp
+*.temp
+
+# OS・個人エディタ設定
 .DS_Store
 Thumbs.db
+Desktop.ini
 .vscode/
 .idea/
 
-# PyInstaller ビルド成果物
-dist/
+# PyInstallerの出力（再現用の .spec は管理できるようにする）
 build/
-*.spec
-
-# ゲーム実行ログ
-src/logs/
-
-# 必要になればここへ追加
-# screenshots/
-# work_in_progress/
+dist/

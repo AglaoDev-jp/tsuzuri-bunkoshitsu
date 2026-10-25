@@ -1,15 +1,20 @@
 {
+  "performance": {
+    "enabled": true
+  },
   "game": {
     "total_scenes": 5,
     "max_retries": 3,
-    "summary_max_characters": 100
+    "summary_max_characters": 100,
+    "summary_in_scene": true
   },
   "ollama": {
-    "base_url": "http://localhost:11434",
+    "base_url": "http://127.0.0.1:11434",
     "default_model": "gemma3:4b",
     "timeout_seconds": 120
   },
   "voicevox": {
+    "prefetch_next_scene_first_chunk": true,
     "base_url": "http://127.0.0.1:50021",
     "speaker_id": 3,
     "volume": 1.0

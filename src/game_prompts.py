@@ -350,6 +350,8 @@ def build_scene_prompt(
     total_scenes: int,
     story_summary: str,
     required_correct_choice: str,
+    include_summary: bool = False,
+    summary_max_characters: int = 100,
 ) -> str:
     """
     最終場面ではない通常場面を1つ生成させるプロンプトを作る。
@@ -376,6 +378,24 @@ def build_scene_prompt(
         "bad_end_title": "不正解時のBad Endタイトル",
         "bad_end_text": "不正解の選択内容と一致する短い結末",
     }
+
+    # 正解側の結果はこの呼び出しで確定するため、その結果を反映した記憶も
+    # 一緒に用意できる。実際に採用するのは、プレイヤーが正解した後だけ。
+    # OFF時は追加項目・追加指示を出さず、従来のプロンプトをそのまま保つ。
+    summary_instruction = ""
+    if include_summary:
+        schema["summary_after_correct"] = (
+            f"前回要約を今回の正解後の事実で更新した、日本語{summary_max_characters}文字以内の要約"
+        )
+        summary_instruction = f"""
+
+正解後の記憶:
+- summary_after_correctは「これまでの物語要約」を、今回の本文・正解側の選択・correct_resultの事実で更新する。
+- 日本語{summary_max_characters}文字以内の短い文章にし、主人公の名前と立場、主要人物、重要な証拠、現在の目的、未解決の問題を優先して残す。
+- 以前の重要な事実も必要に応じて残し、雰囲気だけの描写は省く。
+- Bad Endの出来事や、まだ生成していない次場面の出来事は混ぜない。入力と今回の場面にない事実は創作しない。
+- この要約は内部の記憶用であり、場面本文や選択肢の代わりにはしない。
+- summary_after_correctをscene_textや選択肢本文へコピーしない。正解や選択後の結果をプレイヤー向け本文で先に明かさない。"""
 
     # Scene番号だけで展開を固定せず、物語上の役割だけを補助的に伝える。
     scene_role = _build_scene_role_instruction(scene_number, total_scenes)
@@ -410,7 +430,7 @@ def build_scene_prompt(
 - Bad Endは、実際の不正解側の行動を選んだ結果として書く。
 - 場面{scene_number}は最終場面ではないため、正解側は次へ続けられる内容にする。
 {BACKGROUND_TAG_INSTRUCTION}
-{BGM_TAG_INSTRUCTION}
+{BGM_TAG_INSTRUCTION}{summary_instruction}
 
 次のJSON形式で返す:
 {json.dumps(schema, ensure_ascii=False, indent=2)}
