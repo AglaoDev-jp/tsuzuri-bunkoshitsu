@@ -744,7 +744,7 @@ Code by AglaoDev-jp © 2026, licensed under the MIT License.
 
 ### アイコン
 
-アプリアイコン `src/icon.ico` には、既存READMEの方針を維持しMIT Licenseを適用します。背景・ゲーム内表示画像のCC BY 4.0とは対象を分けます。画像ライセンス文書も「別途記載がある場合を除く」としています。
+本プロジェクトに含まれるアプリアイコンには、MIT Licenseを適用します。
 
 ```text
 App icon by AglaoDev-jp © 2026, licensed under the MIT License.
